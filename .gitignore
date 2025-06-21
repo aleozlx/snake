@@ -1,0 +1,4 @@
+.vscode/
+external/linux-headers/
+build_x64/
+
