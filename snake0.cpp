@@ -1,5 +1,5 @@
 #include <glad/gl.h>
-#include <GLFW/glfw3.h>
+#include <SDL2/SDL.h>
 #include <iostream>
 #include <vector>
 #include <random>
@@ -121,6 +121,12 @@ int lastButtonPressed = -1; // Visual debug: show last button number
 int lastKeyPressed = -1; // Visual debug: show last key number
 float keyPressTime = 0.0f; // Time when key was pressed
 
+// SDL2 variables
+SDL_Window* window = nullptr;
+SDL_GLContext glContext = nullptr;
+SDL_GameController* gameController = nullptr;
+bool running = true;
+
 // OpenGL objects
 GLuint shaderProgram;
 GLuint VAO, VBO;
@@ -138,6 +144,373 @@ GLuint indices[] = {
     0, 1, 2,
     2, 3, 0
 };
+
+// Simple character rendering using small squares (5x7 character matrix)
+void drawChar(char c, float startX, float startY, float charSize, float r, float g, float b);
+
+// Embedded 5x7 bitmap font for essential characters
+static const bool font[36][7][5] = {
+    // 'A' (index 0)
+    {
+        {0,1,1,1,0},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,1,1,1,1},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {0,0,0,0,0}
+    },
+    // 'B' (index 1)
+    {
+        {1,1,1,1,0},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,1,1,1,0},
+        {1,0,0,0,1},
+        {1,1,1,1,0},
+        {0,0,0,0,0}
+    },
+    // 'C' (index 2)
+    {
+        {0,1,1,1,0},
+        {1,0,0,0,1},
+        {1,0,0,0,0},
+        {1,0,0,0,0},
+        {1,0,0,0,1},
+        {0,1,1,1,0},
+        {0,0,0,0,0}
+    },
+    // 'D' (index 3)
+    {
+        {1,1,1,1,0},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,1,1,1,0},
+        {0,0,0,0,0}
+    },
+    // 'E' (index 4)
+    {
+        {1,1,1,1,1},
+        {1,0,0,0,0},
+        {1,0,0,0,0},
+        {1,1,1,1,0},
+        {1,0,0,0,0},
+        {1,1,1,1,1},
+        {0,0,0,0,0}
+    },
+    // 'F' (index 5)
+    {
+        {1,1,1,1,1},
+        {1,0,0,0,0},
+        {1,0,0,0,0},
+        {1,1,1,1,0},
+        {1,0,0,0,0},
+        {1,0,0,0,0},
+        {0,0,0,0,0}
+    },
+    // 'G' (index 6)
+    {
+        {0,1,1,1,0},
+        {1,0,0,0,1},
+        {1,0,0,0,0},
+        {1,0,1,1,1},
+        {1,0,0,0,1},
+        {0,1,1,1,0},
+        {0,0,0,0,0}
+    },
+    // 'H' (index 7)
+    {
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,1,1,1,1},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {0,0,0,0,0}
+    },
+    // 'I' (index 8)
+    {
+        {1,1,1,1,1},
+        {0,0,1,0,0},
+        {0,0,1,0,0},
+        {0,0,1,0,0},
+        {0,0,1,0,0},
+        {1,1,1,1,1},
+        {0,0,0,0,0}
+    },
+    // 'L' (index 9)
+    {
+        {1,0,0,0,0},
+        {1,0,0,0,0},
+        {1,0,0,0,0},
+        {1,0,0,0,0},
+        {1,0,0,0,0},
+        {1,1,1,1,1},
+        {0,0,0,0,0}
+    },
+    // 'M' (index 10)
+    {
+        {1,0,0,0,1},
+        {1,1,0,1,1},
+        {1,0,1,0,1},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {0,0,0,0,0}
+    },
+    // 'N' (index 11)
+    {
+        {1,0,0,0,1},
+        {1,1,0,0,1},
+        {1,0,1,0,1},
+        {1,0,0,1,1},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {0,0,0,0,0}
+    },
+    // 'O' (index 12)
+    {
+        {0,1,1,1,0},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {0,1,1,1,0},
+        {0,0,0,0,0}
+    },
+    // 'P' (index 13)
+    {
+        {1,1,1,1,0},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,1,1,1,0},
+        {1,0,0,0,0},
+        {1,0,0,0,0},
+        {0,0,0,0,0}
+    },
+    // 'R' (index 14)
+    {
+        {1,1,1,1,0},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,1,1,1,0},
+        {1,0,1,0,0},
+        {1,0,0,1,1},
+        {0,0,0,0,0}
+    },
+    // 'S' (index 15)
+    {
+        {0,1,1,1,1},
+        {1,0,0,0,0},
+        {1,0,0,0,0},
+        {0,1,1,1,0},
+        {0,0,0,0,1},
+        {1,1,1,1,0},
+        {0,0,0,0,0}
+    },
+    // 'T' (index 16)
+    {
+        {1,1,1,1,1},
+        {0,0,1,0,0},
+        {0,0,1,0,0},
+        {0,0,1,0,0},
+        {0,0,1,0,0},
+        {0,0,1,0,0},
+        {0,0,0,0,0}
+    },
+    // 'U' (index 17)
+    {
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {0,1,1,1,0},
+        {0,0,0,0,0}
+    },
+    // 'V' (index 18)
+    {
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {0,1,0,1,0},
+        {0,0,1,0,0},
+        {0,0,0,0,0}
+    },
+    // 'W' (index 19)
+    {
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,0,1,0,1},
+        {1,1,0,1,1},
+        {1,0,0,0,1},
+        {0,0,0,0,0}
+    },
+    // 'X' (index 20)
+    {
+        {1,0,0,0,1},
+        {0,1,0,1,0},
+        {0,0,1,0,0},
+        {0,0,1,0,0},
+        {0,1,0,1,0},
+        {1,0,0,0,1},
+        {0,0,0,0,0}
+    },
+    // 'Y' (index 21)
+    {
+        {1,0,0,0,1},
+        {0,1,0,1,0},
+        {0,0,1,0,0},
+        {0,0,1,0,0},
+        {0,0,1,0,0},
+        {0,0,1,0,0},
+        {0,0,0,0,0}
+    },
+    // '_' (index 22)
+    {
+        {0,0,0,0,0},
+        {0,0,0,0,0},
+        {0,0,0,0,0},
+        {0,0,0,0,0},
+        {0,0,0,0,0},
+        {1,1,1,1,1},
+        {0,0,0,0,0}
+    },
+    // '0' (index 23)
+    {
+        {0,1,1,1,0},
+        {1,0,0,0,1},
+        {1,0,0,1,1},
+        {1,0,1,0,1},
+        {1,1,0,0,1},
+        {1,0,0,0,1},
+        {0,1,1,1,0}
+    },
+    // '1' (index 24)
+    {
+        {0,0,1,0,0},
+        {0,1,1,0,0},
+        {0,0,1,0,0},
+        {0,0,1,0,0},
+        {0,0,1,0,0},
+        {0,0,1,0,0},
+        {0,1,1,1,0}
+    },
+    // '2' (index 25)
+    {
+        {0,1,1,1,0},
+        {1,0,0,0,1},
+        {0,0,0,0,1},
+        {0,0,0,1,0},
+        {0,0,1,0,0},
+        {0,1,0,0,0},
+        {1,1,1,1,1}
+    },
+    // '3' (index 26)
+    {
+        {1,1,1,1,1},
+        {0,0,0,1,0},
+        {0,0,1,0,0},
+        {0,0,0,1,0},
+        {0,0,0,0,1},
+        {1,0,0,0,1},
+        {0,1,1,1,0}
+    },
+    // '4' (index 27)
+    {
+        {0,0,0,1,0},
+        {0,0,1,1,0},
+        {0,1,0,1,0},
+        {1,0,0,1,0},
+        {1,1,1,1,1},
+        {0,0,0,1,0},
+        {0,0,0,1,0}
+    },
+    // '5' (index 28)
+    {
+        {1,1,1,1,1},
+        {1,0,0,0,0},
+        {1,1,1,1,0},
+        {0,0,0,0,1},
+        {0,0,0,0,1},
+        {1,0,0,0,1},
+        {0,1,1,1,0}
+    },
+    // '6' (index 29)
+    {
+        {0,0,1,1,0},
+        {0,1,0,0,0},
+        {1,0,0,0,0},
+        {1,1,1,1,0},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {0,1,1,1,0}
+    },
+    // '7' (index 30)
+    {
+        {1,1,1,1,1},
+        {0,0,0,0,1},
+        {0,0,0,1,0},
+        {0,0,1,0,0},
+        {0,1,0,0,0},
+        {0,1,0,0,0},
+        {0,1,0,0,0}
+    },
+    // '8' (index 31)
+    {
+        {0,1,1,1,0},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {0,1,1,1,0},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {0,1,1,1,0}
+    },
+    // '9' (index 32)
+    {
+        {0,1,1,1,0},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {0,1,1,1,1},
+        {0,0,0,0,1},
+        {0,0,0,1,0},
+        {0,1,1,0,0}
+    },
+    // 'K' (index 33)
+    {
+        {1,0,0,0,1},
+        {1,0,0,1,0},
+        {1,0,1,0,0},
+        {1,1,0,0,0},
+        {1,0,1,0,0},
+        {1,0,0,1,0},
+        {1,0,0,0,1}
+    },
+    // 'J' (index 34)  
+    {
+        {0,0,0,0,1},
+        {0,0,0,0,1},
+        {0,0,0,0,1},
+        {0,0,0,0,1},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {0,1,1,1,0}
+    },
+    // 'Q' (index 35)
+    {
+        {0,1,1,1,0},
+        {1,0,0,0,1},
+        {1,0,0,0,1},
+        {1,0,1,0,1},
+        {1,0,0,1,1},
+        {0,1,1,1,1},
+        {0,0,0,0,0}
+    }
+}; 
 
 // Helper function to check if a move is valid
 bool isValidMove(const Point& newHead) {
@@ -223,23 +596,98 @@ void drawCircle(float x, float y, float diameter, float r, float g, float b) {
     glDisable(GL_BLEND);
 }
 
-// Draw a ring (hollow circle) with anti-aliasing
-void drawRing(float x, float y, float diameter, float innerRadiusRatio, float r, float g, float b) {
-    // x, y are in NDC coordinates (center of ring), diameter is outer diameter
-    // innerRadiusRatio is ratio of inner radius to outer radius (0.0 to 1.0)
-    glUniform2f(u_offset, x - diameter*0.5f, y - diameter*0.5f);
-    glUniform2f(u_scale, diameter, diameter);
-    glUniform3f(u_color, r, g, b);
-    glUniform1i(u_shape_type, 2); // Ring shape
-    glUniform1f(u_inner_radius, innerRadiusRatio * 0.5f); // Convert to shader space
+void drawChar(char c, float startX, float startY, float charSize, float r, float g, float b) {
+    int charIndex = -1;
+    switch(c) {
+        case 'A': charIndex = 0; break;
+        case 'B': charIndex = 1; break;
+        case 'C': charIndex = 2; break;
+        case 'D': charIndex = 3; break;
+        case 'E': charIndex = 4; break;
+        case 'F': charIndex = 5; break;
+        case 'G': charIndex = 6; break;
+        case 'H': charIndex = 7; break;
+        case 'I': charIndex = 8; break;
+        case 'L': charIndex = 9; break;
+        case 'M': charIndex = 10; break;
+        case 'N': charIndex = 11; break;
+        case 'O': charIndex = 12; break;
+        case 'P': charIndex = 13; break;
+        case 'R': charIndex = 14; break;
+        case 'S': charIndex = 15; break;
+        case 'T': charIndex = 16; break;
+        case 'U': charIndex = 17; break;
+        case 'V': charIndex = 18; break;
+        case 'W': charIndex = 19; break;
+        case 'X': charIndex = 20; break;
+        case 'Y': charIndex = 21; break;
+        case '_': charIndex = 22; break;
+        case '0': charIndex = 23; break;
+        case '1': charIndex = 24; break;
+        case '2': charIndex = 25; break;
+        case '3': charIndex = 26; break;
+        case '4': charIndex = 27; break;
+        case '5': charIndex = 28; break;
+        case '6': charIndex = 29; break;
+        case '7': charIndex = 30; break;
+        case '8': charIndex = 31; break;
+        case '9': charIndex = 32; break;
+        case 'K': charIndex = 33; break;
+        case 'J': charIndex = 34; break;
+        case 'Q': charIndex = 35; break;
+        default: return; // Skip unknown characters
+    }
     
-    // Enable alpha blending for anti-aliasing
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    
-    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
-    
-    glDisable(GL_BLEND);
+    if (charIndex >= 0) {
+        float pixelSize = charSize / 7.0f; // Each character pixel is 1/7th of character height
+        for (int row = 0; row < 7; row++) {
+            for (int col = 0; col < 5; col++) {
+                if (font[charIndex][row][col]) {
+                    float pixelX = startX + (col * pixelSize);
+                    float pixelY = startY + ((6 - row) * pixelSize);
+                    drawSmallSquare(pixelX, pixelY, pixelSize, r, g, b);
+                }
+            }
+        }
+    }
+}
+
+void drawText(const char* text, float startX, float startY, float charSize, float r, float g, float b) {
+    float x = startX;
+    float charWidth = charSize * (5.0f / 7.0f); // Character width is 5/7 of height
+    while (*text) {
+        drawChar(*text, x, startY, charSize, r, g, b);
+        x += charWidth + (charSize * 0.2f); // Character width + small space
+        text++;
+    }
+}
+
+// Helper function to get button name string for SDL2
+const char* getButtonName(int buttonIndex) {
+    switch (buttonIndex) {
+        case SDL_CONTROLLER_BUTTON_A: return "A";
+        case SDL_CONTROLLER_BUTTON_B: return "B";
+        case SDL_CONTROLLER_BUTTON_X: return "X";
+        case SDL_CONTROLLER_BUTTON_Y: return "Y";
+        case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: return "L_BUMP";
+        case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return "R_BUMP";
+        case SDL_CONTROLLER_BUTTON_BACK: return "MENU";
+        case SDL_CONTROLLER_BUTTON_START: return "VIEW";
+        case SDL_CONTROLLER_BUTTON_GUIDE: return "GUIDE";
+        case SDL_CONTROLLER_BUTTON_LEFTSTICK: return "L_THUMB";
+        case SDL_CONTROLLER_BUTTON_RIGHTSTICK: return "R_THUMB";
+        case SDL_CONTROLLER_BUTTON_DPAD_UP: return "DPAD_UP";
+        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return "DPAD_RIGHT";
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN: return "DPAD_DOWN";
+        case SDL_CONTROLLER_BUTTON_DPAD_LEFT: return "DPAD_LEFT";
+        case SDL_CONTROLLER_BUTTON_MISC1: return "MISC1";
+        case SDL_CONTROLLER_BUTTON_PADDLE1: return "PADDLE1";
+        case SDL_CONTROLLER_BUTTON_PADDLE2: return "PADDLE2";
+        case SDL_CONTROLLER_BUTTON_PADDLE3: return "PADDLE3";
+        case SDL_CONTROLLER_BUTTON_PADDLE4: return "PADDLE4";
+        case SDL_CONTROLLER_BUTTON_TOUCHPAD: return "TOUCHPAD";
+        default: return "UNKNOWN";
+    }
 }
 
 // Draw round eyes on the snake head that look towards the food
@@ -310,404 +758,6 @@ void drawSnakeEyes(int headX, int headY, int foodX, int foodY, float snakeR, flo
     drawCircle(pupilRightX + highlightOffsetX, pupilRightY + highlightOffsetY, highlightDiameter, 1.0f, 1.0f, 1.0f);
 }
 
-// Simple character rendering using small squares (5x7 character matrix)
-void drawChar(char c, float startX, float startY, float charSize, float r, float g, float b) {
-    // Simple 5x7 bitmap font for essential characters
-    static const bool font[][7][5] = {
-        // 'A' (index 0)
-        {
-            {0,1,1,1,0},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,1,1,1,1},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {0,0,0,0,0}
-        },
-        // 'B' (index 1)
-        {
-            {1,1,1,1,0},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,1,1,1,0},
-            {1,0,0,0,1},
-            {1,1,1,1,0},
-            {0,0,0,0,0}
-        },
-        // 'C' (index 2)
-        {
-            {0,1,1,1,0},
-            {1,0,0,0,1},
-            {1,0,0,0,0},
-            {1,0,0,0,0},
-            {1,0,0,0,1},
-            {0,1,1,1,0},
-            {0,0,0,0,0}
-        },
-        // 'D' (index 3)
-        {
-            {1,1,1,1,0},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,1,1,1,0},
-            {0,0,0,0,0}
-        },
-        // 'E' (index 4)
-        {
-            {1,1,1,1,1},
-            {1,0,0,0,0},
-            {1,0,0,0,0},
-            {1,1,1,1,0},
-            {1,0,0,0,0},
-            {1,1,1,1,1},
-            {0,0,0,0,0}
-        },
-        // 'F' (index 5)
-        {
-            {1,1,1,1,1},
-            {1,0,0,0,0},
-            {1,0,0,0,0},
-            {1,1,1,1,0},
-            {1,0,0,0,0},
-            {1,0,0,0,0},
-            {0,0,0,0,0}
-        },
-        // 'G' (index 6)
-        {
-            {0,1,1,1,0},
-            {1,0,0,0,1},
-            {1,0,0,0,0},
-            {1,0,1,1,1},
-            {1,0,0,0,1},
-            {0,1,1,1,0},
-            {0,0,0,0,0}
-        },
-        // 'H' (index 7)
-        {
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,1,1,1,1},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {0,0,0,0,0}
-        },
-        // 'I' (index 8)
-        {
-            {1,1,1,1,1},
-            {0,0,1,0,0},
-            {0,0,1,0,0},
-            {0,0,1,0,0},
-            {0,0,1,0,0},
-            {1,1,1,1,1},
-            {0,0,0,0,0}
-        },
-        // 'L' (index 9)
-        {
-            {1,0,0,0,0},
-            {1,0,0,0,0},
-            {1,0,0,0,0},
-            {1,0,0,0,0},
-            {1,0,0,0,0},
-            {1,1,1,1,1},
-            {0,0,0,0,0}
-        },
-        // 'M' (index 10)
-        {
-            {1,0,0,0,1},
-            {1,1,0,1,1},
-            {1,0,1,0,1},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {0,0,0,0,0}
-        },
-        // 'N' (index 11)
-        {
-            {1,0,0,0,1},
-            {1,1,0,0,1},
-            {1,0,1,0,1},
-            {1,0,0,1,1},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {0,0,0,0,0}
-        },
-        // 'O' (index 12)
-        {
-            {0,1,1,1,0},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {0,1,1,1,0},
-            {0,0,0,0,0}
-        },
-        // 'P' (index 13)
-        {
-            {1,1,1,1,0},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,1,1,1,0},
-            {1,0,0,0,0},
-            {1,0,0,0,0},
-            {0,0,0,0,0}
-        },
-        // 'R' (index 14)
-        {
-            {1,1,1,1,0},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,1,1,1,0},
-            {1,0,1,0,0},
-            {1,0,0,1,1},
-            {0,0,0,0,0}
-        },
-        // 'S' (index 15)
-        {
-            {0,1,1,1,1},
-            {1,0,0,0,0},
-            {1,0,0,0,0},
-            {0,1,1,1,0},
-            {0,0,0,0,1},
-            {1,1,1,1,0},
-            {0,0,0,0,0}
-        },
-        // 'T' (index 16)
-        {
-            {1,1,1,1,1},
-            {0,0,1,0,0},
-            {0,0,1,0,0},
-            {0,0,1,0,0},
-            {0,0,1,0,0},
-            {0,0,1,0,0},
-            {0,0,0,0,0}
-        },
-        // 'U' (index 17)
-        {
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {0,1,1,1,0},
-            {0,0,0,0,0}
-        },
-        // 'V' (index 18)
-        {
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {0,1,0,1,0},
-            {0,0,1,0,0},
-            {0,0,0,0,0}
-        },
-        // 'W' (index 19)
-        {
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {1,0,1,0,1},
-            {1,1,0,1,1},
-            {1,0,0,0,1},
-            {0,0,0,0,0}
-        },
-        // 'X' (index 20)
-        {
-            {1,0,0,0,1},
-            {0,1,0,1,0},
-            {0,0,1,0,0},
-            {0,0,1,0,0},
-            {0,1,0,1,0},
-            {1,0,0,0,1},
-            {0,0,0,0,0}
-        },
-        // 'Y' (index 21)
-        {
-            {1,0,0,0,1},
-            {0,1,0,1,0},
-            {0,0,1,0,0},
-            {0,0,1,0,0},
-            {0,0,1,0,0},
-            {0,0,1,0,0},
-            {0,0,0,0,0}
-        },
-        // '_' (index 22)
-        {
-            {0,0,0,0,0},
-            {0,0,0,0,0},
-            {0,0,0,0,0},
-            {0,0,0,0,0},
-            {0,0,0,0,0},
-            {1,1,1,1,1},
-            {0,0,0,0,0}
-        },
-        // '0' (index 23)
-        {
-            {0,1,1,1,0},
-            {1,0,0,0,1},
-            {1,0,0,1,1},
-            {1,0,1,0,1},
-            {1,1,0,0,1},
-            {1,0,0,0,1},
-            {0,1,1,1,0}
-        },
-        // '1' (index 24)
-        {
-            {0,0,1,0,0},
-            {0,1,1,0,0},
-            {0,0,1,0,0},
-            {0,0,1,0,0},
-            {0,0,1,0,0},
-            {0,0,1,0,0},
-            {0,1,1,1,0}
-        },
-        // '2' (index 25)
-        {
-            {0,1,1,1,0},
-            {1,0,0,0,1},
-            {0,0,0,0,1},
-            {0,0,0,1,0},
-            {0,0,1,0,0},
-            {0,1,0,0,0},
-            {1,1,1,1,1}
-        },
-        // '3' (index 26)
-        {
-            {1,1,1,1,1},
-            {0,0,0,1,0},
-            {0,0,1,0,0},
-            {0,0,0,1,0},
-            {0,0,0,0,1},
-            {1,0,0,0,1},
-            {0,1,1,1,0}
-        },
-        // '4' (index 27)
-        {
-            {0,0,0,1,0},
-            {0,0,1,1,0},
-            {0,1,0,1,0},
-            {1,0,0,1,0},
-            {1,1,1,1,1},
-            {0,0,0,1,0},
-            {0,0,0,1,0}
-        },
-        // '5' (index 28)
-        {
-            {1,1,1,1,1},
-            {1,0,0,0,0},
-            {1,1,1,1,0},
-            {0,0,0,0,1},
-            {0,0,0,0,1},
-            {1,0,0,0,1},
-            {0,1,1,1,0}
-        },
-        // '6' (index 29)
-        {
-            {0,0,1,1,0},
-            {0,1,0,0,0},
-            {1,0,0,0,0},
-            {1,1,1,1,0},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {0,1,1,1,0}
-        },
-        // '7' (index 30)
-        {
-            {1,1,1,1,1},
-            {0,0,0,0,1},
-            {0,0,0,1,0},
-            {0,0,1,0,0},
-            {0,1,0,0,0},
-            {0,1,0,0,0},
-            {0,1,0,0,0}
-        },
-        // '8' (index 31)
-        {
-            {0,1,1,1,0},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {0,1,1,1,0},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {0,1,1,1,0}
-        },
-        // '9' (index 32)
-        {
-            {0,1,1,1,0},
-            {1,0,0,0,1},
-            {1,0,0,0,1},
-            {0,1,1,1,1},
-            {0,0,0,0,1},
-            {0,0,0,1,0},
-            {0,1,1,0,0}
-        }
-    };
-    
-    int charIndex = -1;
-    switch(c) {
-        case 'A': charIndex = 0; break;
-        case 'B': charIndex = 1; break;
-        case 'C': charIndex = 2; break;
-        case 'D': charIndex = 3; break;
-        case 'E': charIndex = 4; break;
-        case 'F': charIndex = 5; break;
-        case 'G': charIndex = 6; break;
-        case 'H': charIndex = 7; break;
-        case 'I': charIndex = 8; break;
-        case 'L': charIndex = 9; break;
-        case 'M': charIndex = 10; break;
-        case 'N': charIndex = 11; break;
-        case 'O': charIndex = 12; break;
-        case 'P': charIndex = 13; break;
-        case 'R': charIndex = 14; break;
-        case 'S': charIndex = 15; break;
-        case 'T': charIndex = 16; break;
-        case 'U': charIndex = 17; break;
-        case 'V': charIndex = 18; break;
-        case 'W': charIndex = 19; break;
-        case 'X': charIndex = 20; break;
-        case 'Y': charIndex = 21; break;
-        case '_': charIndex = 22; break;
-        case '0': charIndex = 23; break;
-        case '1': charIndex = 24; break;
-        case '2': charIndex = 25; break;
-        case '3': charIndex = 26; break;
-        case '4': charIndex = 27; break;
-        case '5': charIndex = 28; break;
-        case '6': charIndex = 29; break;
-        case '7': charIndex = 30; break;
-        case '8': charIndex = 31; break;
-        case '9': charIndex = 32; break;
-        default: return; // Skip unknown characters
-    }
-    
-    if (charIndex >= 0) {
-        float pixelSize = charSize / 7.0f; // Each character pixel is 1/7th of character height
-        for (int row = 0; row < 7; row++) {
-            for (int col = 0; col < 5; col++) {
-                if (font[charIndex][row][col]) {
-                    float pixelX = startX + (col * pixelSize);
-                    float pixelY = startY + ((6 - row) * pixelSize);
-                    drawSmallSquare(pixelX, pixelY, pixelSize, r, g, b);
-                }
-            }
-        }
-    }
-}
-
-void drawText(const char* text, float startX, float startY, float charSize, float r, float g, float b) {
-    float x = startX;
-    float charWidth = charSize * (5.0f / 7.0f); // Character width is 5/7 of height
-    while (*text) {
-        drawChar(*text, x, startY, charSize, r, g, b);
-        x += charWidth + (charSize * 0.2f); // Character width + small space
-        text++;
-    }
-}
-
 // Modular confirmation dialogue rendering
 void drawConfirmationDialogue(const char* message, float bgR, float bgG, float bgB) {
     int centerX = GRID_WIDTH / 2;
@@ -764,33 +814,6 @@ void drawConfirmationDialogue(const char* message, float bgR, float bgG, float b
     drawText("B", bButtonX + cellWidth * 0.3f, bButtonY + cellHeight * 0.2f, buttonTextSize, 1.0f, 1.0f, 1.0f); // White "B" on red
 }
 
-// Helper function to get button name string
-const char* getButtonName(int buttonIndex) {
-    switch (buttonIndex) {
-        case GLFW_GAMEPAD_BUTTON_A: return "A";
-        case GLFW_GAMEPAD_BUTTON_B: return "B";
-        case GLFW_GAMEPAD_BUTTON_X: return "X";
-        case GLFW_GAMEPAD_BUTTON_Y: return "Y";
-        case GLFW_GAMEPAD_BUTTON_LEFT_BUMPER: return "L_BUMP";
-        case GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER: return "R_BUMP";
-        case GLFW_GAMEPAD_BUTTON_BACK: return "MENU";
-        case GLFW_GAMEPAD_BUTTON_START: return "VIEW";
-        case GLFW_GAMEPAD_BUTTON_GUIDE: return "GUIDE";
-        case GLFW_GAMEPAD_BUTTON_LEFT_THUMB: return "L_THUMB";
-        case GLFW_GAMEPAD_BUTTON_RIGHT_THUMB: return "R_THUMB";
-        case GLFW_GAMEPAD_BUTTON_DPAD_UP: return "DPAD_UP";
-        case GLFW_GAMEPAD_BUTTON_DPAD_RIGHT: return "DPAD_RIGHT";
-        case GLFW_GAMEPAD_BUTTON_DPAD_DOWN: return "DPAD_DOWN";
-        case GLFW_GAMEPAD_BUTTON_DPAD_LEFT: return "DPAD_LEFT";
-        // Steam Deck back buttons (L4, L5, R4, R5) - these are typically mapped to higher button indices
-        case 15: return "L4"; // Left back button 1
-        case 16: return "L5"; // Left back button 2  
-        case 17: return "R4"; // Right back button 1
-        case 18: return "R5"; // Right back button 2
-        default: return "UNKNOWN";
-    }
-}
-
 void render() {
     glClear(GL_COLOR_BUFFER_BIT);
     glUseProgram(shaderProgram);
@@ -799,9 +822,6 @@ void render() {
     // Set uniforms - scale to fill one grid cell and fill entire screen
     float scaleX = 2.0f / GRID_WIDTH;
     float scaleY = 2.0f / GRID_HEIGHT;
-    
-    // Don't apply aspect ratio correction - let tiles stretch to fill screen completely
-    // This ensures no black gaps between tiles
     
     glUniform2f(u_scale, scaleX, scaleY);
     
@@ -868,8 +888,8 @@ void render() {
     }
     
     // Visual debug: Display last pressed key in top-right corner
-    if (lastKeyPressed >= 0) {
-        float currentTime = glfwGetTime();
+    if (lastKeyPressed >= 0 && usingKeyboardInput) {
+        float currentTime = SDL_GetTicks() / 1000.0f;
         if (currentTime - keyPressTime < 5.0f) { // Show for 5 seconds
             // Convert grid coordinates to NDC coordinates for text rendering
             float cellWidth = 2.0f / GRID_WIDTH;
@@ -883,7 +903,7 @@ void render() {
             drawText("KEYBOARD", textX, textY + textSize * 1.2f, textSize, 1.0f, 0.0f, 0.0f); // Red text
             
             // Display the key code
-            if (lastKeyPressed == 256) {
+            if (lastKeyPressed == 27) { // SDLK_ESCAPE
                 drawText("ESC", textX, textY, textSize, 1.0f, 0.5f, 0.0f); // Orange ESC
             } else {
                 // For other keys, just show "KEY" since we don't have full character set
@@ -943,7 +963,6 @@ void updateGame() {
     if (!isValidMove(newHead)) {
         // Invalid move - pause movement until direction changes
         movementPaused = true;
-        // std::cout << "Movement paused - invalid direction. Choose a valid direction to continue." << std::endl;
         return;
     }
     
@@ -952,8 +971,6 @@ void updateGame() {
         movementPaused = false;
         std::cout << "Movement resumed!" << std::endl;
     }
-    
-    // std::cout << "Moving to: (" << newHead.x << "," << newHead.y << ")" << std::endl;
     
     // Move the snake
     snake.insert(snake.begin(), newHead);
@@ -977,210 +994,238 @@ void updateGame() {
     }
 }
 
-// KEYBOARD INPUT DISABLED - Using pure gamepad input only
-/*
-void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-    if (action == GLFW_PRESS) {
-        usingKeyboardInput = true;
-        std::cout << ">>> KEYBOARD INPUT DETECTED <<<" << std::endl;
-        std::cout << "Key pressed: " << key << " (scancode: " << scancode << ")" << std::endl;
-        
-        // Check if this might be controller emulation
-        if (key == 256 || key == 258 || key == GLFW_KEY_UP || key == GLFW_KEY_DOWN || 
-            key == GLFW_KEY_LEFT || key == GLFW_KEY_RIGHT || key == GLFW_KEY_ENTER) {
-            std::cout << "WARNING: This might be controller->keyboard emulation!" << std::endl;
-        }
-        
-        // Handle ESC key (256) - check if it's from different buttons
-        if (key == 256) { // ESC key
-            std::cout << "ESC detected with scancode: " << scancode << std::endl;
-            // We can differentiate between buttons using scancode
-            if (scancode == 1) { // Typical ESC scancode
-                std::cout << "Real ESC key - Quitting game" << std::endl;
-                glfwSetWindowShouldClose(window, GLFW_TRUE);
-            } else {
-                std::cout << "ESC from controller button (scancode " << scancode << ") - ignoring or handling differently" << std::endl;
-                // You can handle different scancodes differently here
-                // For now, let's still quit but with different message
-                std::cout << "Controller button mapped to ESC - Quitting game" << std::endl;
-                glfwSetWindowShouldClose(window, GLFW_TRUE);
-            }
-            return; // Don't process further
-        }
-        
-        switch (key) {
-            case GLFW_KEY_R:
-                std::cout << "R key - Restarting game" << std::endl;
-                initializeGame();
-                break;
-            case GLFW_KEY_ENTER:
-                std::cout << "ENTER key (A button) - Restarting game" << std::endl;
-                initializeGame();
-                break;
-            // ESC key handling moved above switch statement
-            case 258:
-                gamePaused = !gamePaused;
-                std::cout << "Key 258 (Menu/Settings) - Game " << (gamePaused ? "paused" : "unpaused") << std::endl;
-                break;
-            // Add WASD controls for testing
-            case GLFW_KEY_W:
-                std::cout << "W key - Move up. Current direction: (" << direction.x << "," << direction.y << ")" << std::endl;
-                if (direction.y == 0) {
-                    Point newDir = Point(0, 1);
-                    Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                    if (isValidMove(testHead) || movementPaused) {
-                        direction = newDir;
-                        std::cout << "Direction changed to: (" << direction.x << "," << direction.y << ")" << std::endl;
-                    } else {
-                        std::cout << "Direction change blocked (would cause collision)" << std::endl;
-                    }
-                } else {
-                    std::cout << "Direction change blocked (already moving vertically)" << std::endl;
-                }
-                break;
-            case GLFW_KEY_S:
-                std::cout << "S key - Move down. Current direction: (" << direction.x << "," << direction.y << ")" << std::endl;
-                if (direction.y == 0) {
-                    Point newDir = Point(0, -1);
-                    Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                    if (isValidMove(testHead) || movementPaused) {
-                        direction = newDir;
-                        std::cout << "Direction changed to: (" << direction.x << "," << direction.y << ")" << std::endl;
-                    } else {
-                        std::cout << "Direction change blocked (would cause collision)" << std::endl;
-                    }
-                } else {
-                    std::cout << "Direction change blocked (already moving vertically)" << std::endl;
-                }
-                break;
-            case GLFW_KEY_A:
-                std::cout << "A key - Move left. Current direction: (" << direction.x << "," << direction.y << ")" << std::endl;
-                if (direction.x == 0) {
-                    Point newDir = Point(-1, 0);
-                    Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                    if (isValidMove(testHead) || movementPaused) {
-                        direction = newDir;
-                        std::cout << "Direction changed to: (" << direction.x << "," << direction.y << ")" << std::endl;
-                    } else {
-                        std::cout << "Direction change blocked (would cause collision)" << std::endl;
-                    }
-                } else {
-                    std::cout << "Direction change blocked (already moving horizontally)" << std::endl;
-                }
-                break;
-            case GLFW_KEY_D:
-                std::cout << "D key - Move right. Current direction: (" << direction.x << "," << direction.y << ")" << std::endl;
-                if (direction.x == 0) {
-                    Point newDir = Point(1, 0);
-                    Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                    if (isValidMove(testHead) || movementPaused) {
-                        direction = newDir;
-                        std::cout << "Direction changed to: (" << direction.x << "," << direction.y << ")" << std::endl;
-                    } else {
-                        std::cout << "Direction change blocked (would cause collision)" << std::endl;
-                    }
-                } else {
-                    std::cout << "Direction change blocked (already moving horizontally)" << std::endl;
-                }
-                break;
-            // Add arrow key support (for D-pad that sends arrow keys)
-            case GLFW_KEY_UP:
-                std::cout << "UP arrow - Move up. Current direction: (" << direction.x << "," << direction.y << ")" << std::endl;
-                if (direction.y == 0) {
-                    Point newDir = Point(0, 1);
-                    Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                    if (isValidMove(testHead) || movementPaused) {
-                        direction = newDir;
-                        std::cout << "Direction changed to: (" << direction.x << "," << direction.y << ")" << std::endl;
-                    } else {
-                        std::cout << "Direction change blocked (would cause collision)" << std::endl;
-                    }
-                } else {
-                    std::cout << "Direction change blocked (already moving vertically)" << std::endl;
-                }
-                break;
-            case GLFW_KEY_DOWN:
-                std::cout << "DOWN arrow - Move down. Current direction: (" << direction.x << "," << direction.y << ")" << std::endl;
-                if (direction.y == 0) {
-                    Point newDir = Point(0, -1);
-                    Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                    if (isValidMove(testHead) || movementPaused) {
-                        direction = newDir;
-                        std::cout << "Direction changed to: (" << direction.x << "," << direction.y << ")" << std::endl;
-                    } else {
-                        std::cout << "Direction change blocked (would cause collision)" << std::endl;
-                    }
-                } else {
-                    std::cout << "Direction change blocked (already moving vertically)" << std::endl;
-                }
-                break;
-            case GLFW_KEY_LEFT:
-                std::cout << "LEFT arrow - Move left. Current direction: (" << direction.x << "," << direction.y << ")" << std::endl;
-                if (direction.x == 0) {
-                    Point newDir = Point(-1, 0);
-                    Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                    if (isValidMove(testHead) || movementPaused) {
-                        direction = newDir;
-                        std::cout << "Direction changed to: (" << direction.x << "," << direction.y << ")" << std::endl;
-                    } else {
-                        std::cout << "Direction change blocked (would cause collision)" << std::endl;
-                    }
-                } else {
-                    std::cout << "Direction change blocked (already moving horizontally)" << std::endl;
-                }
-                break;
-            case GLFW_KEY_RIGHT:
-                std::cout << "RIGHT arrow - Move right. Current direction: (" << direction.x << "," << direction.y << ")" << std::endl;
-                if (direction.x == 0) {
-                    Point newDir = Point(1, 0);
-                    Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                    if (isValidMove(testHead) || movementPaused) {
-                        direction = newDir;
-                        std::cout << "Direction changed to: (" << direction.x << "," << direction.y << ")" << std::endl;
-                    } else {
-                        std::cout << "Direction change blocked (would cause collision)" << std::endl;
-                    }
-                } else {
-                    std::cout << "Direction change blocked (already moving horizontally)" << std::endl;
-                }
-                break;
-        }
-    }
-}
-*/
-
-// Keyboard callback with visual debug
-void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-    if (action == GLFW_PRESS) {
+// Handle SDL2 keyboard events (show visual debug but don't process)
+void handleKeyboardEvent(SDL_KeyboardEvent* keyEvent) {
+    if (keyEvent->type == SDL_KEYDOWN) {
         // Store key info for visual debug
-        lastKeyPressed = key;
-        keyPressTime = glfwGetTime();
+        lastKeyPressed = keyEvent->keysym.sym;
+        keyPressTime = SDL_GetTicks() / 1000.0f;
+        usingKeyboardInput = true;
         
         // Show visual warning instead of immediate exit
         std::cout << ">>> KEYBOARD INPUT DETECTED <<<" << std::endl;
-        std::cout << "Key " << key << " (scancode: " << scancode << ") pressed!" << std::endl;
+        std::cout << "Key " << keyEvent->keysym.sym << " pressed!" << std::endl;
         
         // Special handling for ESC key - show exit confirmation
-        if (key == 256) { // ESC
+        if (keyEvent->keysym.sym == SDLK_ESCAPE) {
             std::cout << "ESC key detected - showing exit confirmation!" << std::endl;
             exitConfirmation = true; // Show confirmation dialogue
         }
     }
 }
 
-int main() {
-    glfwInit();
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+// Handle SDL2 gamepad button down events
+void handleGamepadButtonDown(SDL_ControllerButtonEvent* buttonEvent) {
+    std::cout << ">>> SDL2 GAMEPAD BUTTON " << buttonEvent->button << " PRESSED <<<" << std::endl;
+    
+    // Track gamepad input for display
+    usingGamepadInput = true;
+    lastButtonPressed = buttonEvent->button;
+    
+    switch (buttonEvent->button) {
+        case SDL_CONTROLLER_BUTTON_DPAD_UP:
+            if (direction.y == 0) {
+                Point newDir = Point(0, 1);
+                Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+                if (isValidMove(testHead) || movementPaused) {
+                    direction = newDir;
+                }
+            }
+            break;
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+            if (direction.y == 0) {
+                Point newDir = Point(0, -1);
+                Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+                if (isValidMove(testHead) || movementPaused) {
+                    direction = newDir;
+                }
+            }
+            break;
+        case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+            if (direction.x == 0) {
+                Point newDir = Point(-1, 0);
+                Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+                if (isValidMove(testHead) || movementPaused) {
+                    direction = newDir;
+                }
+            }
+            break;
+        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+            if (direction.x == 0) {
+                Point newDir = Point(1, 0);
+                Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+                if (isValidMove(testHead) || movementPaused) {
+                    direction = newDir;
+                }
+            }
+            break;
+        case SDL_CONTROLLER_BUTTON_A:
+            if (exitConfirmation) {
+                std::cout << "A button - Exit confirmed!" << std::endl;
+                running = false;
+            } else if (resetConfirmation) {
+                std::cout << "A button - Reset confirmed!" << std::endl;
+                initializeGame();
+                resetConfirmation = false;
+            } else {
+                MOVE_INTERVAL = std::max(0.05f, MOVE_INTERVAL - 0.05f);
+                std::cout << "A button - Speed increased! Interval: " << MOVE_INTERVAL << "s" << std::endl;
+            }
+            break;
+        case SDL_CONTROLLER_BUTTON_B:
+            if (exitConfirmation) {
+                exitConfirmation = false;
+                std::cout << "B button - Exit cancelled!" << std::endl;
+            } else if (resetConfirmation) {
+                resetConfirmation = false;
+                std::cout << "B button - Reset cancelled!" << std::endl;
+            } else {
+                MOVE_INTERVAL = std::min(1.0f, MOVE_INTERVAL + 0.05f);
+                std::cout << "B button - Speed decreased! Interval: " << MOVE_INTERVAL << "s" << std::endl;
+            }
+            break;
+        case SDL_CONTROLLER_BUTTON_X:
+            gamePaused = !gamePaused;
+            std::cout << "X button - Game " << (gamePaused ? "paused" : "unpaused") << std::endl;
+            break;
+        case SDL_CONTROLLER_BUTTON_Y:
+            if (!resetConfirmation && !exitConfirmation) {
+                resetConfirmation = true;
+                std::cout << "Y button - Showing reset confirmation" << std::endl;
+            }
+            break;
+        case SDL_CONTROLLER_BUTTON_BACK:
+            gamePaused = !gamePaused;
+            std::cout << "BACK button - Game " << (gamePaused ? "paused" : "unpaused") << std::endl;
+            break;
+        case SDL_CONTROLLER_BUTTON_START:
+            if (!exitConfirmation) {
+                exitConfirmation = true;
+                std::cout << "START button - Showing exit confirmation" << std::endl;
+            }
+            break;
+    }
+}
 
-    // Get primary monitor for fullscreen
-    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
-    const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+// Helper function to create shader program
+GLuint createShaderProgram(const char* vertexShaderSource, const char* fragmentShaderSource) {
+    // Compile vertex shader
+    GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
+    glCompileShader(vertexShader);
+    
+    // Check for vertex shader compile errors
+    GLint success;
+    GLchar infoLog[512];
+    glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
+        std::cerr << "ERROR::SHADER::VERTEX::COMPILATION_FAILED\n" << infoLog << std::endl;
+    }
+    
+    // Compile fragment shader
+    GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
+    glCompileShader(fragmentShader);
+    
+    // Check for fragment shader compile errors
+    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
+        std::cerr << "ERROR::SHADER::FRAGMENT::COMPILATION_FAILED\n" << infoLog << std::endl;
+    }
+    
+    // Link shaders into program
+    GLuint shaderProgram = glCreateProgram();
+    glAttachShader(shaderProgram, vertexShader);
+    glAttachShader(shaderProgram, fragmentShader);
+    glLinkProgram(shaderProgram);
+    
+    // Check for linking errors
+    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success);
+    if (!success) {
+        glGetProgramInfoLog(shaderProgram, 512, NULL, infoLog);
+        std::cerr << "ERROR::SHADER::PROGRAM::LINKING_FAILED\n" << infoLog << std::endl;
+    }
+    
+    // Clean up shaders (they're linked into our program now and no longer needed)
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+    
+    return shaderProgram;
+}
+
+// Handle SDL2 gamepad axis motion (analog sticks)
+void handleGamepadAxis(SDL_ControllerAxisEvent* axisEvent) {
+    const float deadzone = 0.3f;
+    
+    if (axisEvent->axis == SDL_CONTROLLER_AXIS_LEFTX) {
+        float value = axisEvent->value / 32767.0f;
+        if (abs(value) > deadzone && direction.x == 0) {
+            // Track gamepad input for display
+            usingGamepadInput = true;
+            
+            if (value > deadzone) {
+                Point newDir = Point(1, 0);
+                Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+                if (isValidMove(testHead) || movementPaused) {
+                    direction = newDir;
+                }
+            } else if (value < -deadzone) {
+                Point newDir = Point(-1, 0);
+                Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+                if (isValidMove(testHead) || movementPaused) {
+                    direction = newDir;
+                }
+            }
+        }
+    } else if (axisEvent->axis == SDL_CONTROLLER_AXIS_LEFTY) {
+        float value = axisEvent->value / 32767.0f;
+        if (abs(value) > deadzone && direction.y == 0) {
+            // Track gamepad input for display
+            usingGamepadInput = true;
+            
+            if (value < -deadzone) {
+                Point newDir = Point(0, 1);
+                Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+                if (isValidMove(testHead) || movementPaused) {
+                    direction = newDir;
+                }
+            } else if (value > deadzone) {
+                Point newDir = Point(0, -1);
+                Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+                if (isValidMove(testHead) || movementPaused) {
+                    direction = newDir;
+                }
+            }
+        }
+    }
+}
+
+int main() {
+    // Initialize SDL2
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
+        std::cerr << "Failed to initialize SDL2: " << SDL_GetError() << std::endl;
+        return -1;
+    }
+
+    // Set OpenGL version
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+
+    // Get display mode for fullscreen
+    SDL_DisplayMode displayMode;
+    if (SDL_GetDesktopDisplayMode(0, &displayMode) != 0) {
+        std::cerr << "Failed to get display mode: " << SDL_GetError() << std::endl;
+        SDL_Quit();
+        return -1;
+    }
     
     // Calculate aspect ratio and game area dimensions for square cells
-    screenWidth = mode->width;
-    screenHeight = mode->height;
+    screenWidth = displayMode.w;
+    screenHeight = displayMode.h;
     aspectRatio = screenWidth / screenHeight;
     
     // Steam Deck might report orientation differently than expected
@@ -1198,19 +1243,35 @@ int main() {
     std::cout << "Screen: " << screenWidth << "x" << screenHeight << ", aspect ratio: " << aspectRatio << std::endl;
     std::cout << "Grid dimensions: " << GRID_WIDTH << "x" << GRID_HEIGHT << std::endl;
     
-    GLFWwindow* window = glfwCreateWindow(mode->width, mode->height, "Snake Game", monitor, NULL);
-    if (!window) { 
-        std::cerr << "Failed to create GLFW window\n"; 
-        glfwTerminate(); 
-        return -1; 
+    // Create fullscreen window
+    window = SDL_CreateWindow("Snake Game - SDL2",
+                              SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+                              displayMode.w, displayMode.h,
+                              SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
+    
+    if (!window) {
+        std::cerr << "Failed to create SDL2 window: " << SDL_GetError() << std::endl;
+        SDL_Quit();
+        return -1;
     }
-    glfwMakeContextCurrent(window);
-    glfwSetKeyCallback(window, keyCallback);
+    
+    // Create OpenGL context
+    glContext = SDL_GL_CreateContext(window);
+    if (!glContext) {
+        std::cerr << "Failed to create OpenGL context: " << SDL_GetError() << std::endl;
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return -1;
+    }
+    
+    // Enable VSync
+    SDL_GL_SetSwapInterval(1);
     
     // Hide the mouse cursor for gaming
-    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+    SDL_ShowCursor(SDL_DISABLE);
 
-    if (!gladLoadGL(glfwGetProcAddress)) {
+    // Initialize GLAD
+    if (!gladLoadGL((GLADloadfunc)SDL_GL_GetProcAddress)) {
         std::cerr << "Failed to initialize GLAD\n";
         return -1;
     }
@@ -1260,30 +1321,53 @@ int main() {
     // Initialize game
     initializeGame();
     
-    std::cout << "Snake Game Controls (GAMEPAD ONLY):\n";
-    std::cout << "Steam Deck Controller:\n";
-    std::cout << "  D-pad: Move snake (Up/Down/Left/Right)\n";
-    std::cout << "  Left Analog Stick: Alternative movement control\n";
-    std::cout << "  A button: Speed up movement / Confirm action\n";
-    std::cout << "  B button: Slow down movement / Cancel action\n";
-    std::cout << "  X button: Pause/Unpause game\n";
-    std::cout << "  Y button: Show RESET confirmation\n";
-    std::cout << "  Start button: Alternative quit\n";
-    std::cout << "  Menu button (≡, left top): Pause/Unpause\n";
-    std::cout << "  View button (⧉, right top): Show EXIT confirmation\n";
-    std::cout << "\nConfirmation Dialogues:\n";
-    std::cout << "  Exit: Red snake, orange border, A=Exit, B=Cancel\n";
-    std::cout << "  Reset: Orange snake, red-orange border, A=Reset, B=Cancel\n";
+    // Initialize game controller if available
+    if (SDL_NumJoysticks() > 0) {
+        gameController = SDL_GameControllerOpen(0);
+        if (gameController) {
+            std::cout << "=== CONTROLLER DETECTED ===" << std::endl;
+            std::cout << "Controller Name: " << SDL_GameControllerName(gameController) << std::endl;
+            std::cout << "Using SDL2 GAMEPAD INPUT" << std::endl;
+            std::cout << "=========================" << std::endl;
+        }
+    }
+    
+    std::cout << "Snake Game Controls (SDL2 Version):\n";
+    std::cout << "  D-pad/Left Stick: Move snake\n";
+    std::cout << "  A button: Speed up / Confirm\n";
+    std::cout << "  B button: Slow down / Cancel\n";
+    std::cout << "  X button: Pause/Unpause\n";
+    std::cout << "  Y button: Reset confirmation\n";
+    std::cout << "  Start button: Exit confirmation\n";
     std::cout << "Keyboard input is DISABLED for pure controller experience.\n";
 
     // Main game loop
-    while (!glfwWindowShouldClose(window)) {
-        float currentTime = glfwGetTime();
+    while (running) {
+        float currentTime = SDL_GetTicks() / 1000.0f;
         
         // Update flash timer for boundary flashing effect
         flashTimer = currentTime;
         
-        // No automatic timeout - confirmation dialogue stays until user responds
+        // Handle SDL2 events
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            switch (event.type) {
+                case SDL_QUIT:
+                    running = false;
+                    break;
+                case SDL_KEYDOWN:
+                    handleKeyboardEvent(&event.key);
+                    break;
+                case SDL_CONTROLLERBUTTONDOWN:
+                    handleGamepadButtonDown(&event.cbutton);
+                    break;
+                case SDL_CONTROLLERAXISMOTION:
+                    handleGamepadAxis(&event.caxis);
+                    break;
+                default:
+                    break;
+            }
+        }
         
         // Update game logic at fixed intervals (only if not paused or in any confirmation)
         if (!gamePaused && !exitConfirmation && !resetConfirmation && currentTime - lastMoveTime > MOVE_INTERVAL) {
@@ -1291,296 +1375,23 @@ int main() {
             lastMoveTime = currentTime;
         }
         
-        // Handle gamepad input (Steam Deck support)
-        // Check all possible joystick slots
-        int jid = -1;
-        for (int i = GLFW_JOYSTICK_1; i <= GLFW_JOYSTICK_LAST; i++) {
-            if (glfwJoystickPresent(i) && glfwJoystickIsGamepad(i)) {
-                jid = i;
-                break;
-            }
-        }
-        
-        if (jid != -1) {
-            // Debug: Show controller information
-            static bool controllerInfoPrinted = false;
-            if (!controllerInfoPrinted) {
-                const char* name = glfwGetJoystickName(jid);
-                const char* guid = glfwGetJoystickGUID(jid);
-                std::cout << "=== CONTROLLER DETECTED ===" << std::endl;
-                std::cout << "Controller Name: " << (name ? name : "Unknown") << std::endl;
-                std::cout << "Controller GUID: " << (guid ? guid : "Unknown") << std::endl;
-                std::cout << "Using RAW GAMEPAD INPUT (not keyboard emulation)" << std::endl;
-                std::cout << "=========================" << std::endl;
-                controllerInfoPrinted = true;
-            }
-            
-            GLFWgamepadstate state;
-            if (glfwGetGamepadState(jid, &state)) {
-                usingGamepadInput = true;
-                
-                // Debug: Show which buttons are pressed with detailed button mapping
-                static bool anyButtonPressed = false;
-                bool buttonCurrentlyPressed = false;
-                
-                for (int i = 0; i < GLFW_GAMEPAD_BUTTON_LAST; i++) {
-                    if (state.buttons[i] == GLFW_PRESS) {
-                        buttonCurrentlyPressed = true;
-                        lastButtonPressed = i; // Store for visual debug
-                        // Print detailed button information
-                        std::cout << ">>> RAW GAMEPAD BUTTON " << i << " PRESSED <<<" << std::endl;
-                        
-                        // Map button numbers to names for debugging
-                        const char* buttonName = "UNKNOWN";
-                        switch (i) {
-                            case GLFW_GAMEPAD_BUTTON_A: buttonName = "A"; break;
-                            case GLFW_GAMEPAD_BUTTON_B: buttonName = "B"; break;
-                            case GLFW_GAMEPAD_BUTTON_X: buttonName = "X"; break;
-                            case GLFW_GAMEPAD_BUTTON_Y: buttonName = "Y"; break;
-                            case GLFW_GAMEPAD_BUTTON_LEFT_BUMPER: buttonName = "LEFT_BUMPER"; break;
-                            case GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER: buttonName = "RIGHT_BUMPER"; break;
-                            case GLFW_GAMEPAD_BUTTON_BACK: buttonName = "BACK/MENU"; break;
-                            case GLFW_GAMEPAD_BUTTON_START: buttonName = "START"; break;
-                            case GLFW_GAMEPAD_BUTTON_GUIDE: buttonName = "GUIDE/VIEW"; break;
-                            case GLFW_GAMEPAD_BUTTON_LEFT_THUMB: buttonName = "LEFT_THUMB"; break;
-                            case GLFW_GAMEPAD_BUTTON_RIGHT_THUMB: buttonName = "RIGHT_THUMB"; break;
-                            case GLFW_GAMEPAD_BUTTON_DPAD_UP: buttonName = "DPAD_UP"; break;
-                            case GLFW_GAMEPAD_BUTTON_DPAD_RIGHT: buttonName = "DPAD_RIGHT"; break;
-                            case GLFW_GAMEPAD_BUTTON_DPAD_DOWN: buttonName = "DPAD_DOWN"; break;
-                            case GLFW_GAMEPAD_BUTTON_DPAD_LEFT: buttonName = "DPAD_LEFT"; break;
-                        }
-                        std::cout << "Button name: " << buttonName << std::endl;
-                        break;
-                    }
-                }
-                
-                if (buttonCurrentlyPressed && !anyButtonPressed) {
-                    anyButtonPressed = true;
-                } else if (!buttonCurrentlyPressed) {
-                    anyButtonPressed = false;
-                }
-                
-                // D-pad controls with proper press detection
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_UP] == GLFW_PRESS) {
-                    std::cout << "D-pad UP pressed" << std::endl;
-                    if (!dpadUpPressed && direction.y == 0) {
-                        Point newDir = Point(0, 1);
-                        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                        if (isValidMove(testHead) || movementPaused) {
-                            direction = newDir;
-                        }
-                        dpadUpPressed = true;
-                    }
-                } else {
-                    dpadUpPressed = false;
-                }
-                
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_DOWN] == GLFW_PRESS) {
-                    std::cout << "D-pad DOWN pressed" << std::endl;
-                    if (!dpadDownPressed && direction.y == 0) {
-                        Point newDir = Point(0, -1);
-                        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                        if (isValidMove(testHead) || movementPaused) {
-                            direction = newDir;
-                        }
-                        dpadDownPressed = true;
-                    }
-                } else {
-                    dpadDownPressed = false;
-                }
-                
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_LEFT] == GLFW_PRESS) {
-                    std::cout << "D-pad LEFT pressed" << std::endl;
-                    if (!dpadLeftPressed && direction.x == 0) {
-                        Point newDir = Point(-1, 0);
-                        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                        if (isValidMove(testHead) || movementPaused) {
-                            direction = newDir;
-                        }
-                        dpadLeftPressed = true;
-                    }
-                } else {
-                    dpadLeftPressed = false;
-                }
-                
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_RIGHT] == GLFW_PRESS) {
-                    std::cout << "D-pad RIGHT pressed" << std::endl;
-                    if (!dpadRightPressed && direction.x == 0) {
-                        Point newDir = Point(1, 0);
-                        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                        if (isValidMove(testHead) || movementPaused) {
-                            direction = newDir;
-                        }
-                        dpadRightPressed = true;
-                    }
-                } else {
-                    dpadRightPressed = false;
-                }
-                
-                // Left analog stick controls (with deadzone)
-                const float deadzone = 0.3f;
-                float leftX = state.axes[GLFW_GAMEPAD_AXIS_LEFT_X];
-                float leftY = state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
-                
-                if (abs(leftX) > deadzone || abs(leftY) > deadzone) {
-                    if (abs(leftX) > abs(leftY)) {
-                        // Horizontal movement
-                        if (leftX > deadzone && direction.x == 0) {
-                            Point newDir = Point(1, 0);  // Right
-                            Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                            if (isValidMove(testHead) || movementPaused) {
-                                direction = newDir;
-                            }
-                        }
-                        else if (leftX < -deadzone && direction.x == 0) {
-                            Point newDir = Point(-1, 0); // Left
-                            Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                            if (isValidMove(testHead) || movementPaused) {
-                                direction = newDir;
-                            }
-                        }
-                    } else {
-                        // Vertical movement (note: Y-axis is typically inverted on gamepads)
-                        if (leftY < -deadzone && direction.y == 0) {
-                            Point newDir = Point(0, 1);  // Up
-                            Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                            if (isValidMove(testHead) || movementPaused) {
-                                direction = newDir;
-                            }
-                        }
-                        else if (leftY > deadzone && direction.y == 0) {
-                            Point newDir = Point(0, -1); // Down
-                            Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                            if (isValidMove(testHead) || movementPaused) {
-                                direction = newDir;
-                            }
-                        }
-                    }
-                }
-                
-                // Steam Deck controls - handle all buttons properly
-                
-                // A button - Speed up movement OR Confirm action
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_A] == GLFW_PRESS) {
-                    if (!aButtonPressed) {
-                        aButtonPressed = true;
-                        if (exitConfirmation) {
-                            // Confirm exit in confirmation mode
-                            std::cout << "A button - Exit confirmed!" << std::endl;
-                            glfwSetWindowShouldClose(window, GLFW_TRUE);
-                        } else if (resetConfirmation) {
-                            // Confirm reset in confirmation mode
-                            std::cout << "A button - Reset confirmed!" << std::endl;
-                            initializeGame();
-                        } else {
-                            // Normal speed up function
-                            MOVE_INTERVAL = std::max(0.05f, MOVE_INTERVAL - 0.05f);
-                            std::cout << "A button - Speed increased! Interval: " << MOVE_INTERVAL << "s (" << (MOVE_INTERVAL * 1000) << "ms)" << std::endl;
-                        }
-                    }
-                } else {
-                    aButtonPressed = false;
-                }
-                
-                // B button - Slow down movement OR Cancel confirmation
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_B] == GLFW_PRESS) {
-                    if (!bButtonPressed) {
-                        bButtonPressed = true;
-                        if (exitConfirmation) {
-                            // Cancel exit in confirmation mode
-                            exitConfirmation = false;
-                            std::cout << "B button - Exit cancelled!" << std::endl;
-                        } else if (resetConfirmation) {
-                            // Cancel reset in confirmation mode
-                            resetConfirmation = false;
-                            std::cout << "B button - Reset cancelled!" << std::endl;
-                        } else {
-                            // Normal speed down function
-                            MOVE_INTERVAL = std::min(1.0f, MOVE_INTERVAL + 0.05f);
-                            std::cout << "B button - Speed decreased! Interval: " << MOVE_INTERVAL << "s (" << (MOVE_INTERVAL * 1000) << "ms)" << std::endl;
-                        }
-                    }
-                } else {
-                    bButtonPressed = false;
-                }
-                
-                // X button - Pause/Unpause
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_X] == GLFW_PRESS) {
-                    if (!xButtonPressed) {
-                        xButtonPressed = true;
-                        gamePaused = !gamePaused;
-                        std::cout << "X button - Game " << (gamePaused ? "paused" : "unpaused") << std::endl;
-                    }
-                } else {
-                    xButtonPressed = false;
-                }
-                
-                // Y button - Show reset confirmation
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_Y] == GLFW_PRESS) {
-                    if (!yButtonPressed) {
-                        yButtonPressed = true;
-                        if (!resetConfirmation && !exitConfirmation) {
-                            resetConfirmation = true;
-                            std::cout << "Y button - Showing reset confirmation" << std::endl;
-                        } else {
-                            std::cout << "Y button pressed but already in confirmation mode" << std::endl;
-                        }
-                    }
-                } else {
-                    yButtonPressed = false;
-                }
-                
-                // START button now handled above as View button - no separate handler needed
-                
-                // Menu button (left top button) - Pause/Unpause
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_BACK] == GLFW_PRESS) {
-                    if (!selectButtonPressed) {
-                        selectButtonPressed = true;
-                        gamePaused = !gamePaused;
-                        std::cout << "Menu button (left top) - Game " << (gamePaused ? "paused" : "unpaused") << std::endl;
-                    }
-                } else {
-                    selectButtonPressed = false;
-                }
-                
-                // View button (right top button) - Show exit confirmation (mapped to START button #7)
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS) {
-                    if (!startButtonPressed) { // Avoid double-processing with the existing START handler
-                        startButtonPressed = true;
-                        std::cout << ">>> VIEW BUTTON (START #7) DETECTED <<<" << std::endl;
-                        if (!exitConfirmation) {
-                            exitConfirmation = true;
-                            std::cout << "View button (right top) - Showing exit confirmation" << std::endl;
-                            std::cout << "Exit confirmation state set to TRUE" << std::endl;
-                        } else {
-                            std::cout << "View button pressed but already in exit confirmation mode" << std::endl;
-                        }
-                    }
-                } else {
-                    startButtonPressed = false;
-                }
-            }
-        } else {
-            static bool printed = false;
-            if (!printed) {
-                std::cout << "No gamepad detected" << std::endl;
-                printed = true;
-            }
-        }
-
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         render();
 
-        glfwSwapBuffers(window);
-        glfwPollEvents();
+        SDL_GL_SwapWindow(window);
+    }
+
+    // Cleanup
+    if (gameController) {
+        SDL_GameControllerClose(gameController);
     }
 
     glDeleteVertexArrays(1, &VAO);
     glDeleteBuffers(1, &VBO);
     glDeleteProgram(shaderProgram);
 
-    glfwDestroyWindow(window);
-    glfwTerminate();
+    SDL_GL_DeleteContext(glContext);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
     return 0;
-}
-
+} 

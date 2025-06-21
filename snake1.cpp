@@ -1,10 +1,15 @@
 #include <glad/gl.h>
-#include <GLFW/glfw3.h>
+#include <SDL2/SDL.h>
 #include <iostream>
 #include <vector>
 #include <random>
 #include <algorithm>
 #include <cmath>
+
+// Try to include SDL2_image if available
+#ifdef SDL_IMAGE_AVAILABLE
+#include <SDL2/SDL_image.h>
+#endif
 
 // Linux force feedback includes for rumble support
 #ifdef __linux__
@@ -15,30 +20,41 @@
 #include <cstring>
 #endif
 
-// Vertex shader source for rendering squares and circles
+// Vertex shader source for rendering squares, circles, and textures
 const char* vertexShaderSource = R"(
 #version 330 core
 layout (location = 0) in vec2 aPos;
+layout (location = 1) in vec2 aTexCoord;
 uniform vec2 u_offset;
 uniform vec2 u_scale;
 out vec2 texCoord;
+out vec2 fragTexCoord;
 void main() {
-    texCoord = aPos; // Pass original vertex position [0,1] as texture coordinate
+    texCoord = aPos;
+    fragTexCoord = aTexCoord;
     vec2 pos = (aPos * u_scale) + u_offset;
     gl_Position = vec4(pos, 0.0, 1.0);
 }
 )";
 
-// Fragment shader source with proper circle rendering
+// Fragment shader source with proper circle rendering and texture support
 const char* fragmentShaderSource = R"(
 #version 330 core
 in vec2 texCoord;
+in vec2 fragTexCoord;
 out vec4 FragColor;
 uniform vec3 u_color;
-uniform int u_shape_type; // 0 = rectangle, 1 = circle, 2 = ring
+uniform int u_shape_type; // 0 = rectangle, 1 = circle, 2 = ring, 3 = texture
 uniform float u_inner_radius; // For ring shapes
+uniform sampler2D u_texture; // For texture rendering
+uniform bool u_use_texture; // Whether to use texture
 void main() {
-    if (u_shape_type == 0) {
+    if (u_shape_type == 3 || u_use_texture) {
+        // Texture rendering
+        vec4 texColor = texture(u_texture, fragTexCoord);
+        if (texColor.a < 0.1) discard; // Alpha testing for transparency
+        FragColor = texColor;
+    } else if (u_shape_type == 0) {
         // Rectangle (default behavior)
         FragColor = vec4(u_color, 1.0);
     } else if (u_shape_type == 1) {
@@ -80,15 +96,9 @@ void main() {
 }
 )";
 
-// Game constants (will be calculated based on screen aspect ratio)
-int GRID_WIDTH = 20;   // Will be calculated
-int GRID_HEIGHT = 20;  // Base height
-
-// Screen dimensions and calculated values (will be set in main)
-float screenWidth = 1.0f;
-float screenHeight = 1.0f;
-float aspectRatio = 1.0f;
-float cellSize = 0.1f;  // Will be calculated based on screen
+// Game constants
+int GRID_WIDTH = 32;
+int GRID_HEIGHT = 20;
 
 // Game state
 struct Point {
@@ -99,18 +109,18 @@ struct Point {
 
 std::vector<Point> snake;
 Point food;
-Point direction(1, 0); // Start moving right
+Point direction(1, 0);
 bool gameOver = false;
-bool movementPaused = false; // Flag to track if movement is paused due to invalid direction
-bool gamePaused = false; // Flag to track if game is manually paused by user
-bool exitConfirmation = false; // Flag to track if showing exit confirmation dialogue
-bool resetConfirmation = false; // Flag to track if showing reset confirmation dialogue
+bool movementPaused = false;
+bool gamePaused = false;
+bool exitConfirmation = false;
+bool resetConfirmation = false;
 int score = 0;
-int level = 0; // Level counter - starts at 0 (Classic Snake)
+int level = 0; // Level system like snake1
 float lastMoveTime = 0.0f;
-float MOVE_INTERVAL = 0.2f; // Move every 200ms (adjustable)
-float flashTimer = 0.0f; // Timer for flashing boundary effect
-const float FLASH_INTERVAL = 0.1f; // Flash every 300ms
+float MOVE_INTERVAL = 0.2f;
+float flashTimer = 0.0f;
+const float FLASH_INTERVAL = 0.1f;
 
 // Pacman state (level 1+ feature)
 Point pacman;
@@ -119,47 +129,36 @@ float lastPacmanMoveTime = 0.0f;
 float PACMAN_MOVE_INTERVAL = 0.3f; // Pacman moves slightly slower than snake
 bool pacmanActive = false; // Only active in level 1+
 
-// Button state tracking for proper press detection
-bool aButtonPressed = false;
-bool bButtonPressed = false;
-bool xButtonPressed = false;
-bool yButtonPressed = false;
-bool startButtonPressed = false;
-bool selectButtonPressed = false;
-bool dpadUpPressed = false;
-bool dpadDownPressed = false;
-bool dpadLeftPressed = false;
-bool dpadRightPressed = false;
-bool leftBumperPressed = false;
-bool rightBumperPressed = false;
-
-// Input source tracking
+// Input tracking for gamepad display
 bool usingGamepadInput = false;
-bool usingKeyboardInput = false;
-int lastButtonPressed = -1; // Visual debug: show last button number
-int lastKeyPressed = -1; // Visual debug: show last key number
-float keyPressTime = 0.0f; // Time when key was pressed
+int lastButtonPressed = -1; // For visual debug
+float lastButtonTime = 0.0f;
 
 // Rumble/vibration system
-#ifdef __linux__
-int rumbleFd = -1; // File descriptor for force feedback device
-int rumbleEffectId = -1; // ID of the rumble effect
-bool rumbleInitialized = false;
+SDL_Haptic* haptic = nullptr;
+bool rumbleSupported = false;
 float rumbleEndTime = 0.0f; // When current rumble should end
 const float RUMBLE_DURATION = 0.3f; // Duration of rumble effect in seconds
-#endif
+
+// SDL2 variables
+SDL_Window* window = nullptr;
+SDL_GLContext glContext = nullptr;
+SDL_GameController* gameController = nullptr;
+bool running = true;
 
 // OpenGL objects
 GLuint shaderProgram;
 GLuint VAO, VBO;
-GLint u_offset, u_color, u_scale, u_shape_type, u_inner_radius;
+GLint u_offset, u_color, u_scale, u_shape_type, u_inner_radius, u_texture, u_use_texture;
+GLuint appleTexture = 0; // Apple texture for food
 
-// Square vertices (unit square)
+// Square vertices with texture coordinates (position + texcoord)
 float squareVertices[] = {
-    0.0f, 0.0f,
-    1.0f, 0.0f,
-    1.0f, 1.0f,
-    0.0f, 1.0f
+    // Position   // TexCoord
+    0.0f, 0.0f,   0.0f, 1.0f,  // Bottom-left
+    1.0f, 0.0f,   1.0f, 1.0f,  // Bottom-right
+    1.0f, 1.0f,   1.0f, 0.0f,  // Top-right
+    0.0f, 1.0f,   0.0f, 0.0f   // Top-left
 };
 
 GLuint indices[] = {
@@ -260,10 +259,10 @@ void initializeGame() {
     
     direction = Point(1, 0);
     gameOver = false;
-    movementPaused = false; // Reset pause state
-    gamePaused = false; // Reset manual pause state
-    exitConfirmation = false; // Reset exit confirmation state
-    resetConfirmation = false; // Reset reset confirmation state
+    movementPaused = false;
+    gamePaused = false;
+    exitConfirmation = false;
+    resetConfirmation = false;
     score = 0;
     
     // Initialize pacman for level 1+
@@ -297,8 +296,6 @@ void initializeGame() {
 }
 
 void drawSquare(int x, int y, float r, float g, float b) {
-    // Transform grid coordinates to NDC coordinates
-    // Map grid cells to fill entire screen: each cell takes up 2.0f/GRID_WIDTH of NDC space
     float cellWidth = 2.0f / GRID_WIDTH;
     float cellHeight = 2.0f / GRID_HEIGHT;
     float ndcX = (x * cellWidth) - 1.0f;
@@ -307,7 +304,7 @@ void drawSquare(int x, int y, float r, float g, float b) {
     glUniform2f(u_offset, ndcX, ndcY);
     glUniform2f(u_scale, cellWidth, cellHeight);
     glUniform3f(u_color, r, g, b);
-    glUniform1i(u_shape_type, 0); // Rectangle shape
+    glUniform1i(u_shape_type, 0);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
 }
 
@@ -338,23 +335,158 @@ void drawCircle(float x, float y, float diameter, float r, float g, float b) {
     glDisable(GL_BLEND);
 }
 
-// Draw a ring (hollow circle) with anti-aliasing
-void drawRing(float x, float y, float diameter, float innerRadiusRatio, float r, float g, float b) {
-    // x, y are in NDC coordinates (center of ring), diameter is outer diameter
-    // innerRadiusRatio is ratio of inner radius to outer radius (0.0 to 1.0)
-    glUniform2f(u_offset, x - diameter*0.5f, y - diameter*0.5f);
-    glUniform2f(u_scale, diameter, diameter);
-    glUniform3f(u_color, r, g, b);
-    glUniform1i(u_shape_type, 2); // Ring shape
-    glUniform1f(u_inner_radius, innerRadiusRatio * 0.5f); // Convert to shader space
+// Load texture from file (with optional SDL2_image support)
+GLuint loadTexture(const char* filename) {
+#ifdef SDL_IMAGE_AVAILABLE
+    SDL_Surface* surface = IMG_Load(filename);
+    if (!surface) {
+        std::cout << "Failed to load texture " << filename << ": " << IMG_GetError() << std::endl;
+        return 0;
+    }
+#else
+    // Try to load BMP files using SDL2's built-in support
+    SDL_Surface* surface = SDL_LoadBMP(filename);
+    if (!surface) {
+        std::cout << "Failed to load BMP texture " << filename << ": " << SDL_GetError() << std::endl;
+        std::cout << "Note: Only BMP files supported without SDL2_image" << std::endl;
+        return 0;
+    }
+#endif
     
-    // Enable alpha blending for anti-aliasing
+    GLuint texture;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    
+    // Determine format
+    GLenum format = GL_RGB;
+    if (surface->format->BytesPerPixel == 4) {
+        format = GL_RGBA;
+    }
+    
+    glTexImage2D(GL_TEXTURE_2D, 0, format, surface->w, surface->h, 0, format, GL_UNSIGNED_BYTE, surface->pixels);
+    
+    // Set texture parameters
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    
+    SDL_FreeSurface(surface);
+    
+    std::cout << "Loaded texture: " << filename << " (ID: " << texture << ")" << std::endl;
+    return texture;
+}
+
+// Create a simple apple bitmap if no file is found
+GLuint createAppleBitmap() {
+    // Create a simple 16x16 red apple bitmap
+    const int size = 16;
+    unsigned char appleData[size * size * 4]; // RGBA
+    
+    // Simple apple pattern
+    for (int y = 0; y < size; y++) {
+        for (int x = 0; x < size; x++) {
+            int idx = (y * size + x) * 4;
+            
+            // Create a simple apple shape
+            float centerX = size / 2.0f;
+            float centerY = size / 2.0f + 1;
+            float dist = sqrt((x - centerX) * (x - centerX) + (y - centerY) * (y - centerY));
+            
+            if (dist < size / 3.0f) {
+                // Red apple body
+                appleData[idx + 0] = 220; // R
+                appleData[idx + 1] = 20;  // G
+                appleData[idx + 2] = 20;  // B
+                appleData[idx + 3] = 255; // A
+            } else if (y < 4 && x >= 6 && x <= 9) {
+                // Green stem
+                appleData[idx + 0] = 20;  // R
+                appleData[idx + 1] = 150; // G
+                appleData[idx + 2] = 20;  // B
+                appleData[idx + 3] = 255; // A
+            } else {
+                // Transparent
+                appleData[idx + 0] = 0;
+                appleData[idx + 1] = 0;
+                appleData[idx + 2] = 0;
+                appleData[idx + 3] = 0;
+            }
+        }
+    }
+    
+    GLuint texture;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, size, size, 0, GL_RGBA, GL_UNSIGNED_BYTE, appleData);
+    
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    
+    std::cout << "Created procedural apple bitmap (ID: " << texture << ")" << std::endl;
+    return texture;
+}
+
+// Draw textured square (for apple)
+void drawTexturedSquare(int x, int y, GLuint texture) {
+    float cellWidth = 2.0f / GRID_WIDTH;
+    float cellHeight = 2.0f / GRID_HEIGHT;
+    float ndcX = (x * cellWidth) - 1.0f;
+    float ndcY = (y * cellHeight) - 1.0f;
+    
+    glUniform2f(u_offset, ndcX, ndcY);
+    glUniform2f(u_scale, cellWidth, cellHeight);
+    glUniform1i(u_use_texture, GL_TRUE);
+    glUniform1i(u_shape_type, 3); // Texture mode
+    
+    // Bind and use the texture
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glUniform1i(u_texture, 0);
+    
+    // Enable alpha blending for transparency
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
     
     glDisable(GL_BLEND);
+    glUniform1i(u_use_texture, GL_FALSE); // Reset texture mode
+}
+
+// Forward declarations for external font data
+extern const bool font_5x7[36][7][5];
+extern int getCharIndex(char c);
+
+// Simple character rendering using small squares (5x7 character matrix)
+void drawChar(char c, float startX, float startY, float charSize, float r, float g, float b) {
+    int charIndex = getCharIndex(c);
+    
+    if (charIndex >= 0) {
+        float pixelSize = charSize / 7.0f; // Each character pixel is 1/7th of character height
+        for (int row = 0; row < 7; row++) {
+            for (int col = 0; col < 5; col++) {
+                if (font_5x7[charIndex][row][col]) {
+                    float pixelX = startX + (col * pixelSize);
+                    float pixelY = startY + ((6 - row) * pixelSize);
+                    drawSmallSquare(pixelX, pixelY, pixelSize, r, g, b);
+                }
+            }
+        }
+    }
+}
+
+void drawText(const char* text, float startX, float startY, float charSize, float r, float g, float b) {
+    float x = startX;
+    float charWidth = charSize * (5.0f / 7.0f); // Character width is 5/7 of height
+    while (*text) {
+        drawChar(*text, x, startY, charSize, r, g, b);
+        x += charWidth + (charSize * 0.2f); // Character width + small space
+        text++;
+    }
 }
 
 // Draw round eyes on the snake head that look towards the food
@@ -425,38 +557,6 @@ void drawSnakeEyes(int headX, int headY, int foodX, int foodY, float snakeR, flo
     drawCircle(pupilRightX + highlightOffsetX, pupilRightY + highlightOffsetY, highlightDiameter, 1.0f, 1.0f, 1.0f);
 }
 
-// Forward declarations for external font data
-extern const bool font_5x7[36][7][5];
-extern int getCharIndex(char c);
-
-// Simple character rendering using small squares (5x7 character matrix)
-void drawChar(char c, float startX, float startY, float charSize, float r, float g, float b) {
-    int charIndex = getCharIndex(c);
-    
-    if (charIndex >= 0) {
-        float pixelSize = charSize / 7.0f; // Each character pixel is 1/7th of character height
-        for (int row = 0; row < 7; row++) {
-            for (int col = 0; col < 5; col++) {
-                if (font_5x7[charIndex][row][col]) {
-                    float pixelX = startX + (col * pixelSize);
-                    float pixelY = startY + ((6 - row) * pixelSize);
-                    drawSmallSquare(pixelX, pixelY, pixelSize, r, g, b);
-                }
-            }
-        }
-    }
-}
-
-void drawText(const char* text, float startX, float startY, float charSize, float r, float g, float b) {
-    float x = startX;
-    float charWidth = charSize * (5.0f / 7.0f); // Character width is 5/7 of height
-    while (*text) {
-        drawChar(*text, x, startY, charSize, r, g, b);
-        x += charWidth + (charSize * 0.2f); // Character width + small space
-        text++;
-    }
-}
-
 // Modular confirmation dialogue rendering
 void drawConfirmationDialogue(const char* message, float bgR, float bgG, float bgB) {
     int centerX = GRID_WIDTH / 2;
@@ -513,183 +613,68 @@ void drawConfirmationDialogue(const char* message, float bgR, float bgG, float b
     drawText("B", bButtonX + cellWidth * 0.3f, bButtonY + cellHeight * 0.2f, buttonTextSize, 1.0f, 1.0f, 1.0f); // White "B" on red
 }
 
-// Helper function to get button name string
-const char* getButtonName(int buttonIndex) {
-    switch (buttonIndex) {
-        case GLFW_GAMEPAD_BUTTON_A: return "A";
-        case GLFW_GAMEPAD_BUTTON_B: return "B";
-        case GLFW_GAMEPAD_BUTTON_X: return "X";
-        case GLFW_GAMEPAD_BUTTON_Y: return "Y";
-        case GLFW_GAMEPAD_BUTTON_LEFT_BUMPER: return "L_BUMP";
-        case GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER: return "R_BUMP";
-        case GLFW_GAMEPAD_BUTTON_BACK: return "MENU";
-        case GLFW_GAMEPAD_BUTTON_START: return "VIEW";
-        case GLFW_GAMEPAD_BUTTON_GUIDE: return "GUIDE";
-        case GLFW_GAMEPAD_BUTTON_LEFT_THUMB: return "L_THUMB";
-        case GLFW_GAMEPAD_BUTTON_RIGHT_THUMB: return "R_THUMB";
-        case GLFW_GAMEPAD_BUTTON_DPAD_UP: return "DPAD_UP";
-        case GLFW_GAMEPAD_BUTTON_DPAD_RIGHT: return "DPAD_RIGHT";
-        case GLFW_GAMEPAD_BUTTON_DPAD_DOWN: return "DPAD_DOWN";
-        case GLFW_GAMEPAD_BUTTON_DPAD_LEFT: return "DPAD_LEFT";
-        // Steam Deck back buttons (L4, L5, R4, R5) - these are typically mapped to higher button indices
-        case 15: return "L4"; // Left back button 1
-        case 16: return "L5"; // Left back button 2  
-        case 17: return "R4"; // Right back button 1
-        case 18: return "R5"; // Right back button 2
-        default: return "UNKNOWN";
-    }
-}
-
 // Rumble/vibration system functions
-#ifdef __linux__
 bool initializeRumble() {
-    // Try to find and open a force feedback device
-    const char* devicePaths[] = {
-        "/dev/input/event0", "/dev/input/event1", "/dev/input/event2", "/dev/input/event3",
-        "/dev/input/event4", "/dev/input/event5", "/dev/input/event6", "/dev/input/event7",
-        "/dev/input/event8", "/dev/input/event9", "/dev/input/event10", "/dev/input/event11"
-    };
-    
-    for (int i = 0; i < 12; i++) {
-        int fd = open(devicePaths[i], O_RDWR);
-        if (fd < 0) continue;
-        
-        // Check if this device supports force feedback
-        unsigned long features[4];
-        if (ioctl(fd, EVIOCGBIT(0, EV_MAX), features) < 0) {
-            close(fd);
-            continue;
-        }
-        
-        if (!(features[0] & (1 << EV_FF))) {
-            close(fd);
-            continue;
-        }
-        
-        // Check if it supports rumble
-        unsigned long ffFeatures[8]; // Increase buffer size for safety
-        if (ioctl(fd, EVIOCGBIT(EV_FF, FF_MAX), ffFeatures) < 0) {
-            close(fd);
-            continue;
-        }
-        
-        // FF_RUMBLE is an effect type (0x50), check if it's supported
-        // We need to check if the bit at position FF_RUMBLE is set
-        int rumbleBit = FF_RUMBLE;
-        int byteIndex = rumbleBit / (sizeof(unsigned long) * 8);
-        int bitIndex = rumbleBit % (sizeof(unsigned long) * 8);
-        
-        if (byteIndex >= 8 || !(ffFeatures[byteIndex] & (1UL << bitIndex))) {
-            close(fd);
-            continue;
-        }
-        
-        std::cout << "Found force feedback device: " << devicePaths[i] << std::endl;
-        rumbleFd = fd;
-        
-        // Create a rumble effect
-        struct ff_effect effect;
-        memset(&effect, 0, sizeof(effect));
-        effect.type = FF_RUMBLE;
-        effect.id = -1;
-        effect.u.rumble.strong_magnitude = 0xFFFF; // 100% strength for strong motor
-        effect.u.rumble.weak_magnitude = 0xC000;   // 75% strength for weak motor
-        effect.replay.length = (int)(RUMBLE_DURATION * 1000); // Duration in milliseconds
-        effect.replay.delay = 0;
-        
-        if (ioctl(rumbleFd, EVIOCSFF, &effect) < 0) {
-            std::cout << "Failed to create rumble effect" << std::endl;
-            close(rumbleFd);
-            rumbleFd = -1;
-            continue;
-        }
-        
-        rumbleEffectId = effect.id;
-        rumbleInitialized = true;
-        std::cout << "Rumble system initialized successfully!" << std::endl;
-        return true;
+    if (!gameController) {
+        std::cout << "No game controller available for rumble" << std::endl;
+        return false;
     }
     
-    std::cout << "No force feedback device found or failed to initialize rumble" << std::endl;
-    return false;
-}
-
-void cleanupRumble() {
-    if (rumbleFd >= 0) {
-        if (rumbleEffectId >= 0) {
-            ioctl(rumbleFd, EVIOCRMFF, rumbleEffectId);
-        }
-        close(rumbleFd);
-        rumbleFd = -1;
-        rumbleEffectId = -1;
-        rumbleInitialized = false;
+    // Check if the controller supports haptic feedback
+    if (SDL_GameControllerHasRumble(gameController)) {
+        rumbleSupported = true;
+        std::cout << "🎮 Rumble support detected and enabled!" << std::endl;
+        return true;
+    } else {
+        std::cout << "Controller does not support rumble" << std::endl;
+        return false;
     }
 }
 
 void triggerRumble() {
-    if (!rumbleInitialized || rumbleFd < 0 || rumbleEffectId < 0) return;
+    if (!rumbleSupported || !gameController) return;
     
-    // Stop any existing rumble
-    struct input_event stop;
-    stop.type = EV_FF;
-    stop.code = rumbleEffectId;
-    stop.value = 0;
-    write(rumbleFd, &stop, sizeof(stop));
-    
-    // Start new rumble
-    struct input_event play;
-    play.type = EV_FF;
-    play.code = rumbleEffectId;
-    play.value = 1;
-    write(rumbleFd, &play, sizeof(play));
-    
-    rumbleEndTime = glfwGetTime() + RUMBLE_DURATION;
-    std::cout << "🎮 RUMBLE! Collision detected!" << std::endl;
+    // Trigger rumble with SDL2's simple interface
+    // Parameters: controller, low_freq_rumble, high_freq_rumble, duration_ms
+    if (SDL_GameControllerRumble(gameController, 0xFFFF, 0xC000, (Uint32)(RUMBLE_DURATION * 1000)) == 0) {
+        rumbleEndTime = (SDL_GetTicks() / 1000.0f) + RUMBLE_DURATION;
+        std::cout << "🎮 RUMBLE! Collision detected!" << std::endl;
+    } else {
+        std::cout << "Failed to trigger rumble: " << SDL_GetError() << std::endl;
+    }
 }
 
 void updateRumble() {
-    if (!rumbleInitialized) return;
-    
-    // Check if rumble should stop
-    float currentTime = glfwGetTime();
-    if (rumbleEndTime > 0.0f && currentTime >= rumbleEndTime) {
-        if (rumbleFd >= 0 && rumbleEffectId >= 0) {
-            struct input_event stop;
-            stop.type = EV_FF;
-            stop.code = rumbleEffectId;
-            stop.value = 0;
-            write(rumbleFd, &stop, sizeof(stop));
+    // SDL2 handles rumble timing automatically, but we track it for logging
+    if (rumbleSupported && rumbleEndTime > 0.0f) {
+        float currentTime = SDL_GetTicks() / 1000.0f;
+        if (currentTime >= rumbleEndTime) {
+            rumbleEndTime = 0.0f;
+            // Rumble automatically stops after the duration
         }
-        rumbleEndTime = 0.0f;
     }
 }
-#else
-// Dummy functions for non-Linux platforms
-bool initializeRumble() { 
-    std::cout << "Rumble not supported on this platform" << std::endl;
-    return false; 
+
+void cleanupRumble() {
+    if (rumbleSupported && gameController) {
+        // Stop any ongoing rumble
+        SDL_GameControllerRumble(gameController, 0, 0, 0);
+        rumbleSupported = false;
+    }
 }
-void cleanupRumble() {}
-void triggerRumble() {}
-void updateRumble() {}
-#endif
 
 void render() {
     glClear(GL_COLOR_BUFFER_BIT);
     glUseProgram(shaderProgram);
     glBindVertexArray(VAO);
     
-    // Set uniforms - scale to fill one grid cell and fill entire screen
-    float scaleX = 2.0f / GRID_WIDTH;
-    float scaleY = 2.0f / GRID_HEIGHT;
-    
-    // Don't apply aspect ratio correction - let tiles stretch to fill screen completely
-    // This ensures no black gaps between tiles
-    
-    glUniform2f(u_scale, scaleX, scaleY);
-    
-    // Draw food first (background layer)
-    drawSquare(food.x, food.y, 1.0f, 0.0f, 0.0f); // Red
+    // Draw food (apple texture)
+    if (appleTexture != 0) {
+        drawTexturedSquare(food.x, food.y, appleTexture);
+    } else {
+        // Fallback to red square if texture failed to load
+        drawSquare(food.x, food.y, 1.0f, 0.0f, 0.0f);
+    }
     
     // Draw pacman (if active) - yellow circle with black circle mouth
     if (pacmanActive) {
@@ -725,12 +710,11 @@ void render() {
         drawCircle(mouthX, mouthY, mouthDiameter, 0.1f, 0.1f, 0.1f); // Dark mouth
     }
     
-    // Draw directional indicators to debug orientation
-    // Draw corner markers to show screen orientation
-    drawSquare(0, 0, 1.0f, 1.0f, 0.0f);                    // Bottom-left: Yellow
-    drawSquare(GRID_WIDTH-1, 0, 0.0f, 1.0f, 1.0f);         // Bottom-right: Cyan  
-    drawSquare(0, GRID_HEIGHT-1, 1.0f, 0.0f, 1.0f);        // Top-left: Magenta
-    drawSquare(GRID_WIDTH-1, GRID_HEIGHT-1, 1.0f, 1.0f, 1.0f); // Top-right: White
+    // Draw corner markers
+    drawSquare(0, 0, 1.0f, 1.0f, 0.0f);
+    drawSquare(GRID_WIDTH-1, 0, 0.0f, 1.0f, 1.0f);
+    drawSquare(0, GRID_HEIGHT-1, 1.0f, 0.0f, 1.0f);
+    drawSquare(GRID_WIDTH-1, GRID_HEIGHT-1, 1.0f, 1.0f, 1.0f);
     
     // Display level counter in top-left corner
     float cellWidth = 2.0f / GRID_WIDTH;
@@ -753,70 +737,63 @@ void render() {
         drawText("PACMAN", levelTextX, levelTextY - textSize * 1.2f, textSize * 0.7f, 1.0f, 0.8f, 0.0f); // Orange text
     }
     
-    // Visual debug: Display last pressed button name below level info
-    if (lastButtonPressed >= 0) {
+    // Visual debug: Display last pressed button name if gamepad input detected
+    if (lastButtonPressed >= 0 && usingGamepadInput) {
         float buttonTextX = levelTextX;
         float buttonTextY = levelTextY - textSize * 3.0f; // Below level info
         
-        // Get the button name and display it
-        const char* buttonName = getButtonName(lastButtonPressed);
+        // Get button name - simplified for SDL2
+        const char* buttonName = "UNKNOWN";
+        switch (lastButtonPressed) {
+            case SDL_CONTROLLER_BUTTON_A: buttonName = "A"; break;
+            case SDL_CONTROLLER_BUTTON_B: buttonName = "B"; break;
+            case SDL_CONTROLLER_BUTTON_X: buttonName = "X"; break;
+            case SDL_CONTROLLER_BUTTON_Y: buttonName = "Y"; break;
+            case SDL_CONTROLLER_BUTTON_BACK: buttonName = "BACK"; break;
+            case SDL_CONTROLLER_BUTTON_GUIDE: buttonName = "GUIDE"; break;
+            case SDL_CONTROLLER_BUTTON_START: buttonName = "START"; break;
+            case SDL_CONTROLLER_BUTTON_LEFTSTICK: buttonName = "LSTICK"; break;
+            case SDL_CONTROLLER_BUTTON_RIGHTSTICK: buttonName = "RSTICK"; break;
+            case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: buttonName = "LSHOULDER"; break;
+            case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: buttonName = "RSHOULDER"; break;
+            case SDL_CONTROLLER_BUTTON_DPAD_UP: buttonName = "DPAD_UP"; break;
+            case SDL_CONTROLLER_BUTTON_DPAD_DOWN: buttonName = "DPAD_DOWN"; break;
+            case SDL_CONTROLLER_BUTTON_DPAD_LEFT: buttonName = "DPAD_LEFT"; break;
+            case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: buttonName = "DPAD_RIGHT"; break;
+            case SDL_CONTROLLER_BUTTON_MISC1: buttonName = "MISC1"; break;
+            case SDL_CONTROLLER_BUTTON_PADDLE1: buttonName = "PADDLE1"; break;
+            case SDL_CONTROLLER_BUTTON_PADDLE2: buttonName = "PADDLE2"; break;
+            case SDL_CONTROLLER_BUTTON_PADDLE3: buttonName = "PADDLE3"; break;
+            case SDL_CONTROLLER_BUTTON_PADDLE4: buttonName = "PADDLE4"; break;
+            case SDL_CONTROLLER_BUTTON_TOUCHPAD: buttonName = "TOUCHPAD"; break;
+        }
+        
         drawText(buttonName, buttonTextX, buttonTextY, textSize * 0.6f, 1.0f, 1.0f, 0.0f); // Yellow text
         
         // Display "GAMEPAD:" label above the button name
         drawText("GAMEPAD", buttonTextX, buttonTextY + textSize * 0.8f, textSize * 0.6f, 0.0f, 1.0f, 1.0f); // Cyan text
     }
     
-    // Visual debug: Display last pressed key in top-right corner
-    if (lastKeyPressed >= 0) {
-        float currentTime = glfwGetTime();
-        if (currentTime - keyPressTime < 5.0f) { // Show for 5 seconds
-            // Convert grid coordinates to NDC coordinates for text rendering
-            float cellWidth = 2.0f / GRID_WIDTH;
-            float cellHeight = 2.0f / GRID_HEIGHT;
-            float textX = ((GRID_WIDTH - 10) * cellWidth) - 1.0f; // Right side
-            float textY = ((GRID_HEIGHT - 3) * cellHeight) - 1.0f; // Near top
-            
-            float textSize = cellHeight * 0.8f; // Text size is 80% of a cell height
-            
-            // Display keyboard warning
-            drawText("KEYBOARD", textX, textY + textSize * 1.2f, textSize, 1.0f, 0.0f, 0.0f); // Red text
-            
-            // Display the key code
-            if (lastKeyPressed == 256) {
-                drawText("ESC", textX, textY, textSize, 1.0f, 0.5f, 0.0f); // Orange ESC
-            } else {
-                // For other keys, just show "KEY" since we don't have full character set
-                drawText("KEY", textX, textY, textSize, 1.0f, 0.2f, 0.2f); // Light red
-            }
-        }
-    }
-    
-    // Draw snake above text elements - change color based on game state
+    // Draw snake with eyes on head
     for (size_t i = 0; i < snake.size(); i++) {
-        float intensity = i == 0 ? 1.0f : 0.6f; // Head brighter than body
-        
-        float r, g, b; // Store the colors for potential eye rendering
+        float intensity = i == 0 ? 1.0f : 0.6f;
+        float r, g, b; // Store colors for eye rendering
         
         if (exitConfirmation) {
-            // Red snake when showing exit confirmation
             r = intensity; g = 0.0f; b = 0.0f;
-            drawSquare(snake[i].x, snake[i].y, r, g, b); // Red
+            drawSquare(snake[i].x, snake[i].y, r, g, b);
         } else if (resetConfirmation) {
-            // Orange snake when showing reset confirmation
             r = intensity; g = intensity * 0.5f; b = 0.0f;
-            drawSquare(snake[i].x, snake[i].y, r, g, b); // Orange
+            drawSquare(snake[i].x, snake[i].y, r, g, b);
         } else if (gamePaused) {
-            // Yellow snake when paused
             r = intensity; g = intensity; b = 0.0f;
-            drawSquare(snake[i].x, snake[i].y, r, g, b); // Yellow
+            drawSquare(snake[i].x, snake[i].y, r, g, b);
         } else if (movementPaused) {
-            // Purple snake when movement is paused
             r = intensity; g = 0.0f; b = intensity;
-            drawSquare(snake[i].x, snake[i].y, r, g, b); // Purple
+            drawSquare(snake[i].x, snake[i].y, r, g, b);
         } else {
-            // Normal green snake
             r = 0.0f; g = intensity; b = 0.0f;
-            drawSquare(snake[i].x, snake[i].y, r, g, b); // Green
+            drawSquare(snake[i].x, snake[i].y, r, g, b);
         }
         
         // Draw eyes on the snake's head (first segment)
@@ -825,36 +802,32 @@ void render() {
         }
     }
     
-    // Draw border with different effects for different pause states
+    // Draw border
     float borderR, borderG, borderB;
     if (exitConfirmation) {
-        // Steady orange when showing exit confirmation
-        borderR = 1.0f; borderG = 0.5f; borderB = 0.0f; // Orange
+        borderR = 1.0f; borderG = 0.5f; borderB = 0.0f;
     } else if (resetConfirmation) {
-        // Steady red-orange when showing reset confirmation
-        borderR = 1.0f; borderG = 0.3f; borderB = 0.0f; // Red-orange
+        borderR = 1.0f; borderG = 0.3f; borderB = 0.0f;
     } else if (gamePaused) {
-        // Steady orange when manually paused
-        borderR = 1.0f; borderG = 0.5f; borderB = 0.0f; // Orange
+        borderR = 1.0f; borderG = 0.5f; borderB = 0.0f;
     } else if (movementPaused) {
-        // Flash between red and gray based on timer when movement paused
         bool showRed = ((int)(flashTimer / FLASH_INTERVAL) % 2) == 0;
         if (showRed) {
-            borderR = 1.0f; borderG = 0.0f; borderB = 0.0f; // Red
+            borderR = 1.0f; borderG = 0.0f; borderB = 0.0f;
         } else {
-            borderR = 0.5f; borderG = 0.5f; borderB = 0.5f; // Gray
+            borderR = 0.5f; borderG = 0.5f; borderB = 0.5f;
         }
     } else {
-        borderR = 0.5f; borderG = 0.5f; borderB = 0.5f; // Gray
+        borderR = 0.5f; borderG = 0.5f; borderB = 0.5f;
     }
     
-    for (int i = 1; i < GRID_WIDTH-1; i++) { // Skip corners by starting at 1 and ending at GRID_WIDTH-2
-        drawSquare(i, 0, borderR, borderG, borderB);              // Bottom
-        drawSquare(i, GRID_HEIGHT-1, borderR, borderG, borderB);  // Top
+    for (int i = 1; i < GRID_WIDTH-1; i++) {
+        drawSquare(i, 0, borderR, borderG, borderB);
+        drawSquare(i, GRID_HEIGHT-1, borderR, borderG, borderB);
     }
-    for (int i = 1; i < GRID_HEIGHT-1; i++) { // Skip corners by starting at 1 and ending at GRID_HEIGHT-2
-        drawSquare(0, i, borderR, borderG, borderB);              // Left
-        drawSquare(GRID_WIDTH-1, i, borderR, borderG, borderB);   // Right
+    for (int i = 1; i < GRID_HEIGHT-1; i++) {
+        drawSquare(0, i, borderR, borderG, borderB);
+        drawSquare(GRID_WIDTH-1, i, borderR, borderG, borderB);
     }
     
     // Draw confirmation dialogues using modular system
@@ -1013,68 +986,252 @@ void changeLevel(int newLevel) {
     }
 }
 
-// Keyboard callback with visual debug
-void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-    if (action == GLFW_PRESS) {
-        // Store key info for visual debug
-        lastKeyPressed = key;
-        keyPressTime = glfwGetTime();
-        
-        // Show visual warning instead of immediate exit
+// Handle SDL2 keyboard events
+void handleKeyboardEvent(SDL_KeyboardEvent* keyEvent) {
+    if (keyEvent->type == SDL_KEYDOWN) {
         std::cout << ">>> KEYBOARD INPUT DETECTED <<<" << std::endl;
-        std::cout << "Key " << key << " (scancode: " << scancode << ") pressed!" << std::endl;
         
-        // Special handling for ESC key - show exit confirmation
-        if (key == 256) { // ESC
-            std::cout << "ESC key detected - showing exit confirmation!" << std::endl;
-            exitConfirmation = true; // Show confirmation dialogue
+        if (keyEvent->keysym.sym == SDLK_ESCAPE) {
+            std::cout << "ESC key - showing exit confirmation!" << std::endl;
+            exitConfirmation = true;
+        }
+    }
+}
+
+// Handle SDL2 gamepad button down events
+void handleGamepadButtonDown(SDL_ControllerButtonEvent* buttonEvent) {
+    std::cout << ">>> SDL2 GAMEPAD BUTTON " << buttonEvent->button << " PRESSED <<<" << std::endl;
+    
+    // Track gamepad input for display
+    usingGamepadInput = true;
+    lastButtonPressed = buttonEvent->button;
+    lastButtonTime = SDL_GetTicks() / 1000.0f;
+    
+    switch (buttonEvent->button) {
+        case SDL_CONTROLLER_BUTTON_DPAD_UP:
+            if (direction.y == 0) {
+                Point newDir = Point(0, 1);
+                Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+                if (isValidMove(testHead) || movementPaused) {
+                    direction = newDir;
+                }
+            }
+            break;
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+            if (direction.y == 0) {
+                Point newDir = Point(0, -1);
+                Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+                if (isValidMove(testHead) || movementPaused) {
+                    direction = newDir;
+                }
+            }
+            break;
+        case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+            if (direction.x == 0) {
+                Point newDir = Point(-1, 0);
+                Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+                if (isValidMove(testHead) || movementPaused) {
+                    direction = newDir;
+                }
+            }
+            break;
+        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+            if (direction.x == 0) {
+                Point newDir = Point(1, 0);
+                Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+                if (isValidMove(testHead) || movementPaused) {
+                    direction = newDir;
+                }
+            }
+            break;
+        case SDL_CONTROLLER_BUTTON_A:
+            if (exitConfirmation) {
+                std::cout << "A button - Exit confirmed!" << std::endl;
+                running = false;
+            } else if (resetConfirmation) {
+                std::cout << "A button - Reset confirmed!" << std::endl;
+                initializeGame();
+                resetConfirmation = false;
+            } else {
+                MOVE_INTERVAL = std::max(0.05f, MOVE_INTERVAL - 0.05f);
+                std::cout << "A button - Speed increased! Interval: " << MOVE_INTERVAL << "s" << std::endl;
+            }
+            break;
+        case SDL_CONTROLLER_BUTTON_B:
+            if (exitConfirmation) {
+                exitConfirmation = false;
+                std::cout << "B button - Exit cancelled!" << std::endl;
+            } else if (resetConfirmation) {
+                resetConfirmation = false;
+                std::cout << "B button - Reset cancelled!" << std::endl;
+            } else {
+                MOVE_INTERVAL = std::min(1.0f, MOVE_INTERVAL + 0.05f);
+                std::cout << "B button - Speed decreased! Interval: " << MOVE_INTERVAL << "s" << std::endl;
+            }
+            break;
+        case SDL_CONTROLLER_BUTTON_X:
+            gamePaused = !gamePaused;
+            std::cout << "X button - Game " << (gamePaused ? "paused" : "unpaused") << std::endl;
+            break;
+        case SDL_CONTROLLER_BUTTON_Y:
+            if (!resetConfirmation && !exitConfirmation) {
+                resetConfirmation = true;
+                std::cout << "Y button - Showing reset confirmation" << std::endl;
+            }
+            break;
+        case SDL_CONTROLLER_BUTTON_BACK:
+            gamePaused = !gamePaused;
+            std::cout << "BACK button - Game " << (gamePaused ? "paused" : "unpaused") << std::endl;
+            break;
+        case SDL_CONTROLLER_BUTTON_START:
+            if (!exitConfirmation) {
+                exitConfirmation = true;
+                std::cout << "Start button - Showing exit confirmation" << std::endl;
+            }
+            break;
+        case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+            if (!gamePaused && !exitConfirmation && !resetConfirmation) {
+                int newLevel = level - 1;
+                if (newLevel >= 0) {
+                    changeLevel(newLevel);
+                    std::cout << "Left Bumper - Level decreased to " << level << std::endl;
+                } else {
+                    std::cout << "Left Bumper - Already at minimum level (0)" << std::endl;
+                }
+            } else {
+                std::cout << "Left Bumper - Level change blocked (game paused/in dialogue)" << std::endl;
+            }
+            break;
+        case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+            if (!gamePaused && !exitConfirmation && !resetConfirmation) {
+                int newLevel = level + 1;
+                if (newLevel <= 1) {
+                    changeLevel(newLevel);
+                    std::cout << "Right Bumper - Level increased to " << level << std::endl;
+                } else {
+                    std::cout << "Right Bumper - Already at maximum level (1)" << std::endl;
+                }
+            } else {
+                std::cout << "Right Bumber - Level change blocked (game paused/in dialogue)" << std::endl;
+            }
+            break;
+    }
+}
+
+// Handle SDL2 gamepad axis motion (analog sticks)
+void handleGamepadAxis(SDL_ControllerAxisEvent* axisEvent) {
+    const float deadzone = 0.3f;
+    
+    if (axisEvent->axis == SDL_CONTROLLER_AXIS_LEFTX) {
+        float value = axisEvent->value / 32767.0f;
+        if (abs(value) > deadzone && direction.x == 0) {
+            // Track gamepad input for display
+            usingGamepadInput = true;
+            lastButtonTime = SDL_GetTicks() / 1000.0f;
+            
+            if (value > deadzone) {
+                Point newDir = Point(1, 0);
+                Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+                if (isValidMove(testHead) || movementPaused) {
+                    direction = newDir;
+                }
+            } else if (value < -deadzone) {
+                Point newDir = Point(-1, 0);
+                Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+                if (isValidMove(testHead) || movementPaused) {
+                    direction = newDir;
+                }
+            }
+        }
+    } else if (axisEvent->axis == SDL_CONTROLLER_AXIS_LEFTY) {
+        float value = axisEvent->value / 32767.0f;
+        if (abs(value) > deadzone && direction.y == 0) {
+            // Track gamepad input for display
+            usingGamepadInput = true;
+            lastButtonTime = SDL_GetTicks() / 1000.0f;
+            
+            if (value < -deadzone) {
+                Point newDir = Point(0, 1);
+                Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+                if (isValidMove(testHead) || movementPaused) {
+                    direction = newDir;
+                }
+            } else if (value > deadzone) {
+                Point newDir = Point(0, -1);
+                Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+                if (isValidMove(testHead) || movementPaused) {
+                    direction = newDir;
+                }
+            }
         }
     }
 }
 
 int main() {
-    glfwInit();
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-
-    // Get primary monitor for fullscreen
-    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
-    const GLFWvidmode* mode = glfwGetVideoMode(monitor);
-    
-    // Calculate aspect ratio and game area dimensions for square cells
-    screenWidth = mode->width;
-    screenHeight = mode->height;
-    aspectRatio = screenWidth / screenHeight;
-    
-    // Steam Deck might report orientation differently than expected
-    // If tiles appear tall instead of square, the aspect ratio might be inverted
-    bool invertAspectRatio = true; // Enable for Steam Deck orientation fix
-    if (invertAspectRatio) {
-        aspectRatio = screenHeight / screenWidth;
-        std::cout << "Using inverted aspect ratio for Steam Deck orientation" << std::endl;
+    // Initialize SDL2
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
+        std::cerr << "Failed to initialize SDL2: " << SDL_GetError() << std::endl;
+        return -1;
     }
     
-    // Use a fixed grid size and apply aspect ratio correction in scale
-    GRID_WIDTH = 32;   // Fixed width
-    GRID_HEIGHT = 20;  // Fixed height
+    // Initialize SDL2_image if available
+#ifdef SDL_IMAGE_AVAILABLE
+    int imgFlags = IMG_INIT_PNG | IMG_INIT_JPG;
+    if (!(IMG_Init(imgFlags) & imgFlags)) {
+        std::cout << "SDL2_image could not initialize! Using fallback bitmap. IMG_Error: " << IMG_GetError() << std::endl;
+    } else {
+        std::cout << "SDL2_image initialized - PNG/JPG support available" << std::endl;
+    }
+#else
+    std::cout << "SDL2_image not available - using BMP support and fallback bitmap" << std::endl;
+#endif
+
+    // Set OpenGL version
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+
+    // Get display mode for fullscreen
+    SDL_DisplayMode displayMode;
+    if (SDL_GetDesktopDisplayMode(0, &displayMode) != 0) {
+        std::cerr << "Failed to get display mode: " << SDL_GetError() << std::endl;
+        SDL_Quit();
+        return -1;
+    }
     
-    std::cout << "Screen: " << screenWidth << "x" << screenHeight << ", aspect ratio: " << aspectRatio << std::endl;
+    std::cout << "Screen: " << displayMode.w << "x" << displayMode.h << std::endl;
     std::cout << "Grid dimensions: " << GRID_WIDTH << "x" << GRID_HEIGHT << std::endl;
     
-    GLFWwindow* window = glfwCreateWindow(mode->width, mode->height, "Snake Game", monitor, NULL);
-    if (!window) { 
-        std::cerr << "Failed to create GLFW window\n"; 
-        glfwTerminate(); 
-        return -1; 
+    // Create fullscreen window
+    window = SDL_CreateWindow("Snake Game - SDL2",
+                              SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+                              displayMode.w, displayMode.h,
+                              SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
+    
+    if (!window) {
+        std::cerr << "Failed to create SDL2 window: " << SDL_GetError() << std::endl;
+        SDL_Quit();
+        return -1;
     }
-    glfwMakeContextCurrent(window);
-    glfwSetKeyCallback(window, keyCallback);
+    
+    // Create OpenGL context
+    glContext = SDL_GL_CreateContext(window);
+    if (!glContext) {
+        std::cerr << "Failed to create OpenGL context: " << SDL_GetError() << std::endl;
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return -1;
+    }
+    
+    // Enable VSync
+    SDL_GL_SetSwapInterval(1);
     
     // Hide the mouse cursor for gaming
-    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+    SDL_ShowCursor(SDL_DISABLE);
 
-    if (!gladLoadGL(glfwGetProcAddress)) {
+    // Initialize GLAD
+    if (!gladLoadGL((GLADloadfunc)SDL_GL_GetProcAddress)) {
         std::cerr << "Failed to initialize GLAD\n";
         return -1;
     }
@@ -1102,6 +1259,8 @@ int main() {
     u_scale = glGetUniformLocation(shaderProgram, "u_scale");
     u_shape_type = glGetUniformLocation(shaderProgram, "u_shape_type");
     u_inner_radius = glGetUniformLocation(shaderProgram, "u_inner_radius");
+    u_texture = glGetUniformLocation(shaderProgram, "u_texture");
+    u_use_texture = glGetUniformLocation(shaderProgram, "u_use_texture");
 
     // Setup vertex data
     glGenVertexArrays(1, &VAO);
@@ -1118,56 +1277,84 @@ int main() {
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+    // Position attribute (location = 0)
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
+    
+    // Texture coordinate attribute (location = 1)
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glEnableVertexAttribArray(1);
 
     // Initialize game
     initializeGame();
     
-    // Initialize rumble system
-    initializeRumble();
+    // Load apple texture (try different formats)
+    appleTexture = loadTexture("apple.bmp");  // Try BMP first (always supported)
+    if (appleTexture == 0) {
+        appleTexture = loadTexture("apple.png");  // Try PNG (requires SDL2_image)
+    }
+    if (appleTexture == 0) {
+        appleTexture = loadTexture("apple.jpg");  // Try JPG (requires SDL2_image)
+    }
+    if (appleTexture == 0) {
+        std::cout << "No apple image found, creating procedural apple bitmap..." << std::endl;
+        appleTexture = createAppleBitmap();
+    }
     
-    std::cout << "Snake Game Controls (GAMEPAD ONLY):\n";
-    std::cout << "Steam Deck Controller:\n";
-    std::cout << "  D-pad: Move snake (Up/Down/Left/Right)\n";
-    std::cout << "  Left Analog Stick: Alternative movement control\n";
-    std::cout << "  A button: Speed up movement / Confirm action\n";
-    std::cout << "  B button: Slow down movement / Cancel action\n";
-    std::cout << "  X button: Pause/Unpause game\n";
-    std::cout << "  Y button: Show RESET confirmation\n";
-    std::cout << "  Left Bumper (L1): Decrease level (Level 1 → 0)\n";
-    std::cout << "  Right Bumper (R1): Increase level (Level 0 → 1)\n";
-    std::cout << "  Start button: Alternative quit\n";
-    std::cout << "  Menu button (≡, left top): Pause/Unpause\n";
-    std::cout << "  View button (⧉, right top): Show EXIT confirmation\n";
-    std::cout << "\nLevel Features:\n";
-    std::cout << "  Level 0: Classic Snake (previous state)\n";
-    std::cout << "  Level 1: PACMAN COMPETITION! Yellow Pacman competes for food\n";
-    std::cout << "    - Pacman tries to reach food first\n";
-    std::cout << "    - If Pacman gets food, snake must wait for next food\n";
-    std::cout << "    - If snake hits Pacman, snake turns purple (like hitting wall)\n";
-    std::cout << "    - Pacman cannot move through snake\n";
-    std::cout << "\nConfirmation Dialogues:\n";
-    std::cout << "  Exit: Red snake, orange border, A=Exit, B=Cancel\n";
-    std::cout << "  Reset: Orange snake, red-orange border, A=Reset, B=Cancel\n";
-    std::cout << "\nRumble Effects:\n";
-    std::cout << "  🎮 Controller vibrates when snake hits boundaries, itself, or Pacman\n";
-    std::cout << "  Duration: 0.3 seconds per collision\n";
-    std::cout << "Keyboard input is DISABLED for pure controller experience.\n";
+    // Initialize game controller if available
+    if (SDL_NumJoysticks() > 0) {
+        gameController = SDL_GameControllerOpen(0);
+        if (gameController) {
+            std::cout << "=== CONTROLLER DETECTED ===" << std::endl;
+            std::cout << "Controller Name: " << SDL_GameControllerName(gameController) << std::endl;
+            std::cout << "Using SDL2 GAMEPAD INPUT" << std::endl;
+            std::cout << "=========================" << std::endl;
+            
+            // Initialize rumble system
+            initializeRumble();
+        }
+    }
+    
+    std::cout << "Snake Game Controls (SDL2 Version):\n";
+    std::cout << "  D-pad/Left Stick: Move snake\n";
+    std::cout << "  A button: Speed up / Confirm\n";
+    std::cout << "  B button: Slow down / Cancel\n";
+    std::cout << "  X button: Pause/Unpause\n";
+    std::cout << "  Y button: Reset confirmation\n";
+    std::cout << "  Start button: Exit confirmation\n";
 
     // Main game loop
-    while (!glfwWindowShouldClose(window)) {
-        float currentTime = glfwGetTime();
+    while (running) {
+        float currentTime = SDL_GetTicks() / 1000.0f;
         
-        // Update flash timer for boundary flashing effect
+        // Update flash timer
         flashTimer = currentTime;
         
         // Update rumble system
         updateRumble();
         
-        // No automatic timeout - confirmation dialogue stays until user responds
+        // Handle SDL2 events
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            switch (event.type) {
+                case SDL_QUIT:
+                    running = false;
+                    break;
+                case SDL_KEYDOWN:
+                    handleKeyboardEvent(&event.key);
+                    break;
+                case SDL_CONTROLLERBUTTONDOWN:
+                    handleGamepadButtonDown(&event.cbutton);
+                    break;
+                case SDL_CONTROLLERAXISMOTION:
+                    handleGamepadAxis(&event.caxis);
+                    break;
+                default:
+                    break;
+            }
+        }
         
-        // Update game logic at fixed intervals (only if not paused or in any confirmation)
+        // Update game logic at fixed intervals
         if (!gamePaused && !exitConfirmation && !resetConfirmation && currentTime - lastMoveTime > MOVE_INTERVAL) {
             updateGame();
             lastMoveTime = currentTime;
@@ -1179,339 +1366,32 @@ int main() {
             lastPacmanMoveTime = currentTime;
         }
         
-        // Handle gamepad input (Steam Deck support)
-        // Check all possible joystick slots
-        int jid = -1;
-        for (int i = GLFW_JOYSTICK_1; i <= GLFW_JOYSTICK_LAST; i++) {
-            if (glfwJoystickPresent(i) && glfwJoystickIsGamepad(i)) {
-                jid = i;
-                break;
-            }
-        }
-        
-        if (jid != -1) {
-            // Debug: Show controller information
-            static bool controllerInfoPrinted = false;
-            if (!controllerInfoPrinted) {
-                const char* name = glfwGetJoystickName(jid);
-                const char* guid = glfwGetJoystickGUID(jid);
-                std::cout << "=== CONTROLLER DETECTED ===" << std::endl;
-                std::cout << "Controller Name: " << (name ? name : "Unknown") << std::endl;
-                std::cout << "Controller GUID: " << (guid ? guid : "Unknown") << std::endl;
-                std::cout << "Using RAW GAMEPAD INPUT (not keyboard emulation)" << std::endl;
-                std::cout << "=========================" << std::endl;
-                controllerInfoPrinted = true;
-            }
-            
-            GLFWgamepadstate state;
-            if (glfwGetGamepadState(jid, &state)) {
-                usingGamepadInput = true;
-                
-                // Debug: Show which buttons are pressed with detailed button mapping
-                static bool anyButtonPressed = false;
-                bool buttonCurrentlyPressed = false;
-                
-                for (int i = 0; i < GLFW_GAMEPAD_BUTTON_LAST; i++) {
-                    if (state.buttons[i] == GLFW_PRESS) {
-                        buttonCurrentlyPressed = true;
-                        lastButtonPressed = i; // Store for visual debug
-                        // Print detailed button information
-                        std::cout << ">>> RAW GAMEPAD BUTTON " << i << " PRESSED <<<" << std::endl;
-                        
-                        // Map button numbers to names for debugging
-                        const char* buttonName = "UNKNOWN";
-                        switch (i) {
-                            case GLFW_GAMEPAD_BUTTON_A: buttonName = "A"; break;
-                            case GLFW_GAMEPAD_BUTTON_B: buttonName = "B"; break;
-                            case GLFW_GAMEPAD_BUTTON_X: buttonName = "X"; break;
-                            case GLFW_GAMEPAD_BUTTON_Y: buttonName = "Y"; break;
-                            case GLFW_GAMEPAD_BUTTON_LEFT_BUMPER: buttonName = "LEFT_BUMPER"; break;
-                            case GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER: buttonName = "RIGHT_BUMPER"; break;
-                            case GLFW_GAMEPAD_BUTTON_BACK: buttonName = "BACK/MENU"; break;
-                            case GLFW_GAMEPAD_BUTTON_START: buttonName = "START"; break;
-                            case GLFW_GAMEPAD_BUTTON_GUIDE: buttonName = "GUIDE/VIEW"; break;
-                            case GLFW_GAMEPAD_BUTTON_LEFT_THUMB: buttonName = "LEFT_THUMB"; break;
-                            case GLFW_GAMEPAD_BUTTON_RIGHT_THUMB: buttonName = "RIGHT_THUMB"; break;
-                            case GLFW_GAMEPAD_BUTTON_DPAD_UP: buttonName = "DPAD_UP"; break;
-                            case GLFW_GAMEPAD_BUTTON_DPAD_RIGHT: buttonName = "DPAD_RIGHT"; break;
-                            case GLFW_GAMEPAD_BUTTON_DPAD_DOWN: buttonName = "DPAD_DOWN"; break;
-                            case GLFW_GAMEPAD_BUTTON_DPAD_LEFT: buttonName = "DPAD_LEFT"; break;
-                        }
-                        std::cout << "Button name: " << buttonName << std::endl;
-                        break;
-                    }
-                }
-                
-                if (buttonCurrentlyPressed && !anyButtonPressed) {
-                    anyButtonPressed = true;
-                } else if (!buttonCurrentlyPressed) {
-                    anyButtonPressed = false;
-                }
-                
-                // D-pad controls with proper press detection
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_UP] == GLFW_PRESS) {
-                    std::cout << "D-pad UP pressed" << std::endl;
-                    if (!dpadUpPressed && direction.y == 0) {
-                        Point newDir = Point(0, 1);
-                        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                        if (isValidMove(testHead) || movementPaused) {
-                            direction = newDir;
-                        }
-                        dpadUpPressed = true;
-                    }
-                } else {
-                    dpadUpPressed = false;
-                }
-                
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_DOWN] == GLFW_PRESS) {
-                    std::cout << "D-pad DOWN pressed" << std::endl;
-                    if (!dpadDownPressed && direction.y == 0) {
-                        Point newDir = Point(0, -1);
-                        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                        if (isValidMove(testHead) || movementPaused) {
-                            direction = newDir;
-                        }
-                        dpadDownPressed = true;
-                    }
-                } else {
-                    dpadDownPressed = false;
-                }
-                
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_LEFT] == GLFW_PRESS) {
-                    std::cout << "D-pad LEFT pressed" << std::endl;
-                    if (!dpadLeftPressed && direction.x == 0) {
-                        Point newDir = Point(-1, 0);
-                        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                        if (isValidMove(testHead) || movementPaused) {
-                            direction = newDir;
-                        }
-                        dpadLeftPressed = true;
-                    }
-                } else {
-                    dpadLeftPressed = false;
-                }
-                
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_RIGHT] == GLFW_PRESS) {
-                    std::cout << "D-pad RIGHT pressed" << std::endl;
-                    if (!dpadRightPressed && direction.x == 0) {
-                        Point newDir = Point(1, 0);
-                        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                        if (isValidMove(testHead) || movementPaused) {
-                            direction = newDir;
-                        }
-                        dpadRightPressed = true;
-                    }
-                } else {
-                    dpadRightPressed = false;
-                }
-                
-                // Left analog stick controls (with deadzone)
-                const float deadzone = 0.3f;
-                float leftX = state.axes[GLFW_GAMEPAD_AXIS_LEFT_X];
-                float leftY = state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
-                
-                if (abs(leftX) > deadzone || abs(leftY) > deadzone) {
-                    if (abs(leftX) > abs(leftY)) {
-                        // Horizontal movement
-                        if (leftX > deadzone && direction.x == 0) {
-                            Point newDir = Point(1, 0);  // Right
-                            Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                            if (isValidMove(testHead) || movementPaused) {
-                                direction = newDir;
-                            }
-                        }
-                        else if (leftX < -deadzone && direction.x == 0) {
-                            Point newDir = Point(-1, 0); // Left
-                            Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                            if (isValidMove(testHead) || movementPaused) {
-                                direction = newDir;
-                            }
-                        }
-                    } else {
-                        // Vertical movement (note: Y-axis is typically inverted on gamepads)
-                        if (leftY < -deadzone && direction.y == 0) {
-                            Point newDir = Point(0, 1);  // Up
-                            Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                            if (isValidMove(testHead) || movementPaused) {
-                                direction = newDir;
-                            }
-                        }
-                        else if (leftY > deadzone && direction.y == 0) {
-                            Point newDir = Point(0, -1); // Down
-                            Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-                            if (isValidMove(testHead) || movementPaused) {
-                                direction = newDir;
-                            }
-                        }
-                    }
-                }
-                
-                // Steam Deck controls - handle all buttons properly
-                
-                // A button - Speed up movement OR Confirm action
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_A] == GLFW_PRESS) {
-                    if (!aButtonPressed) {
-                        aButtonPressed = true;
-                        if (exitConfirmation) {
-                            // Confirm exit in confirmation mode
-                            std::cout << "A button - Exit confirmed!" << std::endl;
-                            glfwSetWindowShouldClose(window, GLFW_TRUE);
-                        } else if (resetConfirmation) {
-                            // Confirm reset in confirmation mode
-                            std::cout << "A button - Reset confirmed!" << std::endl;
-                            initializeGame();
-                        } else {
-                            // Normal speed up function
-                            MOVE_INTERVAL = std::max(0.05f, MOVE_INTERVAL - 0.05f);
-                            std::cout << "A button - Speed increased! Interval: " << MOVE_INTERVAL << "s (" << (MOVE_INTERVAL * 1000) << "ms)" << std::endl;
-                        }
-                    }
-                } else {
-                    aButtonPressed = false;
-                }
-                
-                // B button - Slow down movement OR Cancel confirmation
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_B] == GLFW_PRESS) {
-                    if (!bButtonPressed) {
-                        bButtonPressed = true;
-                        if (exitConfirmation) {
-                            // Cancel exit in confirmation mode
-                            exitConfirmation = false;
-                            std::cout << "B button - Exit cancelled!" << std::endl;
-                        } else if (resetConfirmation) {
-                            // Cancel reset in confirmation mode
-                            resetConfirmation = false;
-                            std::cout << "B button - Reset cancelled!" << std::endl;
-                        } else {
-                            // Normal speed down function
-                            MOVE_INTERVAL = std::min(1.0f, MOVE_INTERVAL + 0.05f);
-                            std::cout << "B button - Speed decreased! Interval: " << MOVE_INTERVAL << "s (" << (MOVE_INTERVAL * 1000) << "ms)" << std::endl;
-                        }
-                    }
-                } else {
-                    bButtonPressed = false;
-                }
-                
-                // X button - Pause/Unpause
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_X] == GLFW_PRESS) {
-                    if (!xButtonPressed) {
-                        xButtonPressed = true;
-                        gamePaused = !gamePaused;
-                        std::cout << "X button - Game " << (gamePaused ? "paused" : "unpaused") << std::endl;
-                    }
-                } else {
-                    xButtonPressed = false;
-                }
-                
-                // Y button - Show reset confirmation
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_Y] == GLFW_PRESS) {
-                    if (!yButtonPressed) {
-                        yButtonPressed = true;
-                        if (!resetConfirmation && !exitConfirmation) {
-                            resetConfirmation = true;
-                            std::cout << "Y button - Showing reset confirmation" << std::endl;
-                        } else {
-                            std::cout << "Y button pressed but already in confirmation mode" << std::endl;
-                        }
-                    }
-                } else {
-                    yButtonPressed = false;
-                }
-                
-                // START button now handled above as View button - no separate handler needed
-                
-                // Menu button (left top button) - Pause/Unpause
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_BACK] == GLFW_PRESS) {
-                    if (!selectButtonPressed) {
-                        selectButtonPressed = true;
-                        gamePaused = !gamePaused;
-                        std::cout << "Menu button (left top) - Game " << (gamePaused ? "paused" : "unpaused") << std::endl;
-                    }
-                } else {
-                    selectButtonPressed = false;
-                }
-                
-                // View button (right top button) - Show exit confirmation (mapped to START button #7)
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS) {
-                    if (!startButtonPressed) { // Avoid double-processing with the existing START handler
-                        startButtonPressed = true;
-                        std::cout << ">>> VIEW BUTTON (START #7) DETECTED <<<" << std::endl;
-                        if (!exitConfirmation) {
-                            exitConfirmation = true;
-                            std::cout << "View button (right top) - Showing exit confirmation" << std::endl;
-                            std::cout << "Exit confirmation state set to TRUE" << std::endl;
-                        } else {
-                            std::cout << "View button pressed but already in exit confirmation mode" << std::endl;
-                        }
-                    }
-                } else {
-                    startButtonPressed = false;
-                }
-                
-                // Left Bumper - Decrease level (only during normal play)
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_LEFT_BUMPER] == GLFW_PRESS) {
-                    if (!leftBumperPressed) {
-                        leftBumperPressed = true;
-                        if (!gamePaused && !exitConfirmation && !resetConfirmation) {
-                            int newLevel = level - 1;
-                            if (newLevel >= 0) {
-                                changeLevel(newLevel);
-                                std::cout << "Left Bumper - Level decreased to " << level << std::endl;
-                            } else {
-                                std::cout << "Left Bumper - Already at minimum level (0)" << std::endl;
-                            }
-                        } else {
-                            std::cout << "Left Bumper - Level change blocked (game paused/in dialogue)" << std::endl;
-                        }
-                    }
-                } else {
-                    leftBumperPressed = false;
-                }
-                
-                // Right Bumper - Increase level (only during normal play)
-                if (state.buttons[GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER] == GLFW_PRESS) {
-                    if (!rightBumperPressed) {
-                        rightBumperPressed = true;
-                        if (!gamePaused && !exitConfirmation && !resetConfirmation) {
-                            int newLevel = level + 1;
-                            if (newLevel <= 1) {
-                                changeLevel(newLevel);
-                                std::cout << "Right Bumper - Level increased to " << level << std::endl;
-                            } else {
-                                std::cout << "Right Bumper - Already at maximum level (1)" << std::endl;
-                            }
-                        } else {
-                            std::cout << "Right Bumper - Level change blocked (game paused/in dialogue)" << std::endl;
-                        }
-                    }
-                } else {
-                    rightBumperPressed = false;
-                }
-            }
-        } else {
-            static bool printed = false;
-            if (!printed) {
-                std::cout << "No gamepad detected" << std::endl;
-                printed = true;
-            }
-        }
-
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         render();
 
-        glfwSwapBuffers(window);
-        glfwPollEvents();
+        SDL_GL_SwapWindow(window);
     }
 
-    // Cleanup rumble system
+    // Cleanup
     cleanupRumble();
+    if (gameController) {
+        SDL_GameControllerClose(gameController);
+    }
 
     glDeleteVertexArrays(1, &VAO);
     glDeleteBuffers(1, &VBO);
     glDeleteProgram(shaderProgram);
+    
+    // Cleanup textures
+    if (appleTexture != 0) {
+        glDeleteTextures(1, &appleTexture);
+    }
 
-    glfwDestroyWindow(window);
-    glfwTerminate();
+    SDL_GL_DeleteContext(glContext);
+    SDL_DestroyWindow(window);
+#ifdef SDL_IMAGE_AVAILABLE
+    IMG_Quit();
+#endif
+    SDL_Quit();
     return 0;
-}
-
+} 

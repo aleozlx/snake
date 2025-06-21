@@ -1,5 +1,5 @@
 #include <glad/gl.h>
-#include <GLFW/glfw3.h>
+#include <SDL2/SDL.h>
 #include <iostream>
 
 // Vertex shader source
@@ -26,18 +26,55 @@ float vertices[] = {
      0.5f, -0.5f, 0.0f
 };
 
+// SDL2 variables
+SDL_Window* window = nullptr;
+SDL_GLContext glContext = nullptr;
+SDL_GameController* gameController = nullptr;
+bool running = true;
+
 int main() {
-    glfwInit();
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    // Initialize SDL2
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
+        std::cerr << "Failed to initialize SDL2: " << SDL_GetError() << std::endl;
+        return -1;
+    }
 
-    GLFWwindow* window = glfwCreateWindow(800, 600, "Triangle", NULL, NULL);
-    if (!window) { std::cerr << "Failed to create GLFW window\n"; glfwTerminate(); return -1; }
-    glfwMakeContextCurrent(window);
+    // Set OpenGL version
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
-    if (!gladLoadGL(glfwGetProcAddress)) {
+    // Create window
+    window = SDL_CreateWindow("Triangle - SDL2",
+                              SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                              800, 600,
+                              SDL_WINDOW_OPENGL);
+    
+    if (!window) {
+        std::cerr << "Failed to create SDL2 window: " << SDL_GetError() << std::endl;
+        SDL_Quit();
+        return -1;
+    }
+    
+    // Create OpenGL context
+    glContext = SDL_GL_CreateContext(window);
+    if (!glContext) {
+        std::cerr << "Failed to create OpenGL context: " << SDL_GetError() << std::endl;
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return -1;
+    }
+    
+    // Enable VSync
+    SDL_GL_SetSwapInterval(1);
+
+    // Initialize GLAD
+    if (!gladLoadGL((GLADloadfunc)SDL_GL_GetProcAddress)) {
         std::cerr << "Failed to initialize GLAD\n";
+        SDL_GL_DeleteContext(glContext);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
         return -1;
     }
 
@@ -71,27 +108,48 @@ int main() {
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
-    // Render loop
-    while (!glfwWindowShouldClose(window)) {
-//        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-       if (
-    glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS ||
-    glfwGetKey(window, GLFW_KEY_SPACE)  == GLFW_PRESS ||
-    glfwGetKey(window, GLFW_KEY_ENTER)  == GLFW_PRESS
-)
-{
-    glfwSetWindowShouldClose(window, GLFW_TRUE);
-}
-      // 	    glfwSetWindowShouldClose(window, true);
-int jid = GLFW_JOYSTICK_1;
-if (glfwJoystickIsGamepad(jid)) {
-    GLFWgamepadstate state;
-    if (glfwGetGamepadState(jid, &state)) {
-        if (state.buttons[GLFW_GAMEPAD_BUTTON_B] == GLFW_PRESS)
-            glfwSetWindowShouldClose(window, GLFW_TRUE);
+    // Initialize game controller if available
+    if (SDL_NumJoysticks() > 0) {
+        gameController = SDL_GameControllerOpen(0);
+        if (gameController) {
+            std::cout << "Controller detected: " << SDL_GameControllerName(gameController) << std::endl;
+        }
     }
-}
 
+    std::cout << "Triangle Demo Controls:\n";
+    std::cout << "  ESC/Space/Enter: Exit\n";
+    std::cout << "  Gamepad B button: Exit\n";
+
+    // Main render loop
+    while (running) {
+        // Handle SDL2 events
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            switch (event.type) {
+                case SDL_QUIT:
+                    running = false;
+                    break;
+                    
+                case SDL_KEYDOWN:
+                    if (event.key.keysym.sym == SDLK_ESCAPE ||
+                        event.key.keysym.sym == SDLK_SPACE ||
+                        event.key.keysym.sym == SDLK_RETURN) {
+                        running = false;
+                    }
+                    break;
+                    
+                case SDL_CONTROLLERBUTTONDOWN:
+                    if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B) {
+                        running = false;
+                    }
+                    break;
+                    
+                default:
+                    break;
+            }
+        }
+
+        // Render
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
@@ -99,16 +157,20 @@ if (glfwJoystickIsGamepad(jid)) {
         glBindVertexArray(VAO);
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
-        glfwSwapBuffers(window);
-        glfwPollEvents();
+        SDL_GL_SwapWindow(window);
+    }
+
+    // Cleanup
+    if (gameController) {
+        SDL_GameControllerClose(gameController);
     }
 
     glDeleteVertexArrays(1, &VAO);
     glDeleteBuffers(1, &VBO);
     glDeleteProgram(shaderProgram);
 
-    glfwDestroyWindow(window);
-    glfwTerminate();
+    SDL_GL_DeleteContext(glContext);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
     return 0;
-}
-
+} 
