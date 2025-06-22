@@ -1,10 +1,4 @@
-#include <glad/gl.h>
-#include <SDL2/SDL.h>
-#include <iostream>
-#include <vector>
-#include <random>
-#include <algorithm>
-#include <cmath>
+#include "snake_dep.h"
 
 // Vertex shader source for rendering squares and circles
 const char* vertexShaderSource = R"(

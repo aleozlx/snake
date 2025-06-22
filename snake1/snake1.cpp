@@ -1,14 +1,12 @@
-#include <glad/gl.h>
-#include <SDL2/SDL.h>
-#include <iostream>
-#include <vector>
-#include <random>
-#include <algorithm>
-#include <cmath>
+#include "snake_dep.h"
 
 // Try to include SDL2_image if available
 #ifdef SDL_IMAGE_AVAILABLE
+#ifdef __APPLE__
+#include <SDL_image.h>
+#else
 #include <SDL2/SDL_image.h>
+#endif
 #endif
 
 // Linux force feedback includes for rumble support
