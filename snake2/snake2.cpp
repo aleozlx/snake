@@ -1,4 +1,5 @@
 #include "snake_dep.h"
+#include "circular_buffer.h"
 
 // Try to include SDL2_image if available
 #ifdef SDL_IMAGE_AVAILABLE
@@ -8,6 +9,9 @@
 #include <SDL2/SDL_image.h>
 #endif
 #endif
+
+// Debug mode for smaller grid in IPC mode
+#define IPC_DEBUG_SMALL_GRID 0  // Set to 1 to enable smaller grid for IPC debugging
 
 // Linux force feedback includes for rumble support
 #ifdef __linux__
@@ -100,8 +104,13 @@ void main() {
 )";
 
 // Game constants
+#if IPC_DEBUG_SMALL_GRID
+int GRID_WIDTH = 16;
+int GRID_HEIGHT = 10;  // Maintain 1.6:1 aspect ratio (16:10)
+#else
 int GRID_WIDTH = 32;
 int GRID_HEIGHT = 20;
+#endif
 
 // Gyroscope and food physics (Level 2+ feature)
 bool gyroSupported = false;
@@ -171,6 +180,10 @@ SDL_Window *window = nullptr;
 SDL_GLContext glContext = nullptr;
 SDL_GameController *gameController = nullptr;
 bool running = true;
+
+// IPC Mode variables
+bool ipcMode = false;
+MemoryMappedCircularBuffer* circularBuffer = nullptr;
 
 // OpenGL objects
 GLuint shaderProgram;
@@ -1158,6 +1171,26 @@ void render() {
     }
   }
 
+  // Show IPC mode indicator next to level info
+  if (ipcMode) {
+    float ipcTextX = levelTextX + textSize * 6.0f; // To the right of level description
+    float ipcTextY = levelTextY; // Same height as level number
+    float ipcTextSize = textSize * 0.5f; // Small font like other indicators
+    
+    // Show IPC indicator
+    drawText("IPC", ipcTextX, ipcTextY, ipcTextSize, 0.0f, 1.0f, 1.0f); // Cyan text
+    
+    if (circularBuffer) {
+      uint32_t write_idx, read_idx, total_writes, total_reads;
+      circularBuffer->get_stats(&write_idx, &read_idx, &total_writes, &total_reads);
+      
+      char statText[32];
+      snprintf(statText, sizeof(statText), "W:%u R:%u", write_idx, read_idx);
+      drawText(statText, ipcTextX, ipcTextY - ipcTextSize * 1.2f, 
+               ipcTextSize * 0.8f, 1.0f, 1.0f, 0.0f); // Yellow text, smaller
+    }
+  }
+
   // Display gyroscope status for Level 2
   if (level >= 2) {
     float gyroTextX = levelTextX;
@@ -1590,9 +1623,169 @@ void handleKeyboardEvent(SDL_KeyboardEvent *keyEvent) {
   if (keyEvent->type == SDL_KEYDOWN) {
     std::cout << ">>> KEYBOARD INPUT DETECTED <<<" << std::endl;
 
-    if (keyEvent->keysym.sym == SDLK_ESCAPE) {
-      std::cout << "ESC key - showing exit confirmation!" << std::endl;
-      exitConfirmation = true;
+    switch (keyEvent->keysym.sym) {
+    // Movement keys - Arrow keys
+    case SDLK_UP:
+      if (direction.y == 0) {
+        Point newDir = Point(0, 1);
+        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+        if (isValidMove(testHead) || movementPaused) {
+          direction = newDir;
+          std::cout << "Arrow Up - Moving up" << std::endl;
+        }
+      }
+      break;
+    case SDLK_DOWN:
+      if (direction.y == 0) {
+        Point newDir = Point(0, -1);
+        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+        if (isValidMove(testHead) || movementPaused) {
+          direction = newDir;
+          std::cout << "Arrow Down - Moving down" << std::endl;
+        }
+      }
+      break;
+    case SDLK_LEFT:
+      if (direction.x == 0) {
+        Point newDir = Point(-1, 0);
+        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+        if (isValidMove(testHead) || movementPaused) {
+          direction = newDir;
+          std::cout << "Arrow Left - Moving left" << std::endl;
+        }
+      }
+      break;
+    case SDLK_RIGHT:
+      if (direction.x == 0) {
+        Point newDir = Point(1, 0);
+        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+        if (isValidMove(testHead) || movementPaused) {
+          direction = newDir;
+          std::cout << "Arrow Right - Moving right" << std::endl;
+        }
+      }
+      break;
+    
+    // Movement keys - WASD
+    case SDLK_w:
+      if (direction.y == 0) {
+        Point newDir = Point(0, 1);
+        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+        if (isValidMove(testHead) || movementPaused) {
+          direction = newDir;
+          std::cout << "W key - Moving up" << std::endl;
+        }
+      }
+      break;
+    case SDLK_s:
+      if (direction.y == 0) {
+        Point newDir = Point(0, -1);
+        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+        if (isValidMove(testHead) || movementPaused) {
+          direction = newDir;
+          std::cout << "S key - Moving down" << std::endl;
+        }
+      }
+      break;
+    case SDLK_a:
+      if (direction.x == 0) {
+        Point newDir = Point(-1, 0);
+        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+        if (isValidMove(testHead) || movementPaused) {
+          direction = newDir;
+          std::cout << "A key - Moving left" << std::endl;
+        }
+      }
+      break;
+    case SDLK_d:
+      if (direction.x == 0) {
+        Point newDir = Point(1, 0);
+        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
+        if (isValidMove(testHead) || movementPaused) {
+          direction = newDir;
+          std::cout << "D key - Moving right" << std::endl;
+        }
+      }
+      break;
+    
+    // Action keys (gamepad equivalents)
+    case SDLK_RETURN: // Enter = A button
+      if (exitConfirmation) {
+        std::cout << "Enter key - Exit confirmed!" << std::endl;
+        running = false;
+      } else if (resetConfirmation) {
+        std::cout << "Enter key - Reset confirmed!" << std::endl;
+        initializeGame();
+        resetConfirmation = false;
+      } else {
+        MOVE_INTERVAL = std::max(0.05f, MOVE_INTERVAL - 0.05f);
+        std::cout << "Enter key - Speed increased! Interval: " << MOVE_INTERVAL
+                  << "s" << std::endl;
+      }
+      break;
+    
+    case SDLK_ESCAPE: // Esc = B button
+      if (exitConfirmation) {
+        exitConfirmation = false;
+        std::cout << "ESC key - Exit cancelled!" << std::endl;
+      } else if (resetConfirmation) {
+        resetConfirmation = false;
+        std::cout << "ESC key - Reset cancelled!" << std::endl;
+      } else {
+        MOVE_INTERVAL = std::min(1.0f, MOVE_INTERVAL + 0.05f);
+        std::cout << "ESC key - Speed decreased! Interval: " << MOVE_INTERVAL
+                  << "s" << std::endl;
+      }
+      break;
+    
+    case SDLK_SPACE: // Space = X button
+      gamePaused = !gamePaused;
+      std::cout << "Space key - Game " << (gamePaused ? "paused" : "unpaused")
+                << std::endl;
+      break;
+    
+    case SDLK_r: // R = Y button
+      if (!resetConfirmation && !exitConfirmation) {
+        resetConfirmation = true;
+        std::cout << "R key - Showing reset confirmation" << std::endl;
+      }
+      break;
+    
+    case SDLK_PAGEUP: // Page Up = Right Shoulder (increase level)
+      if (!gamePaused && !exitConfirmation && !resetConfirmation) {
+        int newLevel = level + 1;
+        if (newLevel <= 2) {
+          changeLevel(newLevel);
+          std::cout << "Page Up - Level increased to " << level << std::endl;
+        } else {
+          std::cout << "Page Up - Already at maximum level (2)" << std::endl;
+        }
+      } else {
+        std::cout
+            << "Page Up - Level change blocked (game paused/in dialogue)"
+            << std::endl;
+      }
+      break;
+    
+    case SDLK_PAGEDOWN: // Page Down = Left Shoulder (decrease level)
+      if (!gamePaused && !exitConfirmation && !resetConfirmation) {
+        int newLevel = level - 1;
+        if (newLevel >= 0) {
+          changeLevel(newLevel);
+          std::cout << "Page Down - Level decreased to " << level << std::endl;
+        } else {
+          std::cout << "Page Down - Already at minimum level (0)" << std::endl;
+        }
+      } else {
+        std::cout
+            << "Page Down - Level change blocked (game paused/in dialogue)"
+            << std::endl;
+      }
+      break;
+    
+    default:
+      std::cout << "Unhandled key: " << keyEvent->keysym.sym << std::endl;
+      break;
     }
   }
 }
@@ -1775,7 +1968,150 @@ void handleGamepadAxis(SDL_ControllerAxisEvent *axisEvent) {
   }
 }
 
-int main() {
+// IPC slot data structure (using conditional grid size)
+struct IPCSlotData {
+#if IPC_DEBUG_SMALL_GRID
+    char grid[16 * 10];  // Small grid for debugging (160 bytes)
+    char last_button;    // Last button pressed (1 byte)
+    char padding[863];   // Pad to slot size (1024 - 160 - 1 = 863 bytes)
+#else
+    char grid[32 * 20];  // Normal grid representation (640 bytes)
+    char last_button;    // Last button pressed (1 byte)
+    char padding[383];   // Pad to slot size (1024 - 640 - 1 = 383 bytes)
+#endif
+};
+
+// Initialize IPC mode
+bool initializeIPC() {
+    std::cout << "=== INITIALIZING IPC MODE ===" << std::endl;
+    
+#if IPC_DEBUG_SMALL_GRID
+    std::cout << "🐛 DEBUG MODE: Using small grid (" << GRID_WIDTH << "x" << GRID_HEIGHT << ") for IPC debugging" << std::endl;
+    std::cout << "Grid data size: " << (GRID_WIDTH * GRID_HEIGHT) << " bytes" << std::endl;
+#else
+    std::cout << "Normal grid size: " << GRID_WIDTH << "x" << GRID_HEIGHT << std::endl;
+    std::cout << "Grid data size: " << (GRID_WIDTH * GRID_HEIGHT) << " bytes" << std::endl;
+#endif
+    
+    // Create circular buffer instance
+    circularBuffer = new MemoryMappedCircularBuffer();
+    
+    // Try to initialize with snake2.dat in current directory
+    if (!circularBuffer->initialize("snake2.dat")) {
+        std::cout << "Failed to open existing snake2.dat, creating new one..." << std::endl;
+        
+        // Create new buffer file
+        if (!MemoryMappedCircularBuffer::create_buffer_file("snake2.dat")) {
+            std::cout << "❌ Failed to create snake2.dat!" << std::endl;
+            delete circularBuffer;
+            circularBuffer = nullptr;
+            return false;
+        }
+        
+        // Try to initialize again
+        if (!circularBuffer->initialize("snake2.dat")) {
+            std::cout << "❌ Failed to initialize circular buffer!" << std::endl;
+            delete circularBuffer;
+            circularBuffer = nullptr;
+            return false;
+        }
+    }
+    
+    std::cout << "✅ Circular buffer initialized: snake2.dat" << std::endl;
+    std::cout << "Buffer stages: " << BUFFER_STAGES << ", Slot size: " << SLOT_SIZE << " bytes" << std::endl;
+    std::cout << "============================" << std::endl;
+    return true;
+}
+
+// Create downsampled grid representation
+void createIPCGridData(char* gridData) {
+    // Initialize grid with spaces (empty)
+    for (int i = 0; i < GRID_WIDTH * GRID_HEIGHT; i++) {
+        gridData[i] = ' ';
+    }
+    
+    // Draw border
+    for (int x = 0; x < GRID_WIDTH; x++) {
+        gridData[0 * GRID_WIDTH + x] = '#';  // Top border
+        gridData[(GRID_HEIGHT - 1) * GRID_WIDTH + x] = '#';  // Bottom border
+    }
+    for (int y = 0; y < GRID_HEIGHT; y++) {
+        gridData[y * GRID_WIDTH + 0] = '#';  // Left border
+        gridData[y * GRID_WIDTH + (GRID_WIDTH - 1)] = '#';  // Right border
+    }
+    
+    // Draw corner markers
+    gridData[0 * GRID_WIDTH + 0] = 'Y';  // Yellow corner (top-left)
+    gridData[0 * GRID_WIDTH + (GRID_WIDTH - 1)] = 'C';  // Cyan corner (top-right)
+    gridData[(GRID_HEIGHT - 1) * GRID_WIDTH + 0] = 'M';  // Magenta corner (bottom-left)
+    gridData[(GRID_HEIGHT - 1) * GRID_WIDTH + (GRID_WIDTH - 1)] = 'W';  // White corner (bottom-right)
+    
+    // Draw food
+    if (food.x >= 0 && food.x < GRID_WIDTH && food.y >= 0 && food.y < GRID_HEIGHT) {
+        gridData[food.y * GRID_WIDTH + food.x] = 'F';  // Food
+    }
+    
+    // Draw pacman if active
+    if (pacmanActive && pacman.x >= 0 && pacman.x < GRID_WIDTH && 
+        pacman.y >= 0 && pacman.y < GRID_HEIGHT) {
+        gridData[pacman.y * GRID_WIDTH + pacman.x] = 'P';  // Pacman
+    }
+    
+    // Draw snake (body first, then head on top)
+    for (size_t i = snake.size(); i > 0; i--) {
+        const Point& segment = snake[i - 1];
+        if (segment.x >= 0 && segment.x < GRID_WIDTH && 
+            segment.y >= 0 && segment.y < GRID_HEIGHT) {
+            if (i == 1) {
+                // Snake head
+                if (movementPaused) {
+                    gridData[segment.y * GRID_WIDTH + segment.x] = 'H';  // Paused head
+                } else {
+                    gridData[segment.y * GRID_WIDTH + segment.x] = 'S';  // Snake head
+                }
+            } else {
+                gridData[segment.y * GRID_WIDTH + segment.x] = 's';  // Snake body
+            }
+        }
+    }
+}
+
+// Write current game state to circular buffer
+void writeIPCSlot() {
+    if (!circularBuffer) return;
+    
+    IPCSlotData slotData = {};
+    
+    // Create downsampled grid
+    createIPCGridData(slotData.grid);
+    
+    // Set last button pressed
+    slotData.last_button = (char)lastButtonPressed;
+    
+    // Write to circular buffer
+    if (!circularBuffer->write_slot(&slotData, sizeof(IPCSlotData))) {
+        std::cout << "⚠️  Failed to write to circular buffer!" << std::endl;
+    }
+}
+
+// Cleanup IPC mode
+void cleanupIPC() {
+    if (circularBuffer) {
+        circularBuffer->cleanup();
+        delete circularBuffer;
+        circularBuffer = nullptr;
+        std::cout << "IPC mode cleaned up" << std::endl;
+    }
+}
+
+int main(int argc, char* argv[]) {
+  // Parse command line arguments
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "-e") == 0) {
+      ipcMode = true;
+      std::cout << "🔗 IPC Mode enabled via -e argument" << std::endl;
+    }
+  }
   // Initialize SDL2
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_SENSOR) <
       0) {
@@ -1818,10 +2154,30 @@ int main() {
   std::cout << "Grid dimensions: " << GRID_WIDTH << "x" << GRID_HEIGHT
             << std::endl;
 
-  // Create fullscreen window
-  window = SDL_CreateWindow(
-      "Snake Game - SDL2", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-      displayMode.w, displayMode.h, SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
+#if IPC_DEBUG_SMALL_GRID
+  std::cout << "🐛 IPC DEBUG MODE: Small grid enabled (16x10)" << std::endl;
+  std::cout << "   To disable: Set IPC_DEBUG_SMALL_GRID to 0 and recompile" << std::endl;
+#else
+  std::cout << "Normal grid mode (32x20)" << std::endl;
+  std::cout << "   To enable IPC debug: Set IPC_DEBUG_SMALL_GRID to 1 and recompile" << std::endl;
+#endif
+
+  // Create window - fullscreen or windowed based on IPC mode
+  if (ipcMode) {
+    // Windowed mode for IPC
+    int windowWidth = 800;
+    int windowHeight = 600;
+    window = SDL_CreateWindow(
+        "Snake Game - IPC Mode", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        windowWidth, windowHeight, SDL_WINDOW_OPENGL);
+    std::cout << "Created windowed IPC mode: " << windowWidth << "x" << windowHeight << std::endl;
+  } else {
+    // Fullscreen mode for normal gameplay
+    window = SDL_CreateWindow(
+        "Snake Game - SDL2", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+        displayMode.w, displayMode.h, SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
+    std::cout << "Created fullscreen mode: " << displayMode.w << "x" << displayMode.h << std::endl;
+  }
 
   if (!window) {
     std::cerr << "Failed to create SDL2 window: " << SDL_GetError()
@@ -1908,6 +2264,22 @@ int main() {
   // Initialize game
   initializeGame();
 
+  // Initialize IPC mode if enabled
+  if (ipcMode) {
+    if (!initializeIPC()) {
+      std::cerr << "Failed to initialize IPC mode, exiting..." << std::endl;
+      cleanupIPC();
+      // Cleanup and exit
+      if (gameController) {
+        SDL_GameControllerClose(gameController);
+      }
+      SDL_GL_DeleteContext(glContext);
+      SDL_DestroyWindow(window);
+      SDL_Quit();
+      return -1;
+    }
+  }
+
   // Load apple texture (try different formats)
   appleTexture = loadTexture("apple.bmp"); // Try BMP first (always supported)
   if (appleTexture == 0) {
@@ -1941,6 +2313,7 @@ int main() {
   initializeGyroscope();
 
   std::cout << "Snake Game Controls (SDL2 Version):\n";
+  std::cout << "=== GAMEPAD CONTROLS ===\n";
   std::cout << "  D-pad/Left Stick: Move snake\n";
   std::cout << "  A button: Speed up / Confirm\n";
   std::cout << "  B button: Slow down / Cancel\n";
@@ -1948,6 +2321,13 @@ int main() {
   std::cout << "  Y button: Reset confirmation\n";
   std::cout << "  Start button: Exit confirmation\n";
   std::cout << "  L/R Shoulder: Change level (0=SNAKE, 1=PACMAN, 2=GRAVITY)\n";
+  std::cout << "=== KEYBOARD CONTROLS ===\n";
+  std::cout << "  Arrow Keys / WASD: Move snake\n";
+  std::cout << "  Enter: Speed up / Confirm\n";
+  std::cout << "  Esc: Slow down / Cancel\n";
+  std::cout << "  Space: Pause/Unpause\n";
+  std::cout << "  R: Reset confirmation\n";
+  std::cout << "  Page Down/Up: Change level (0=SNAKE, 1=PACMAN, 2=GRAVITY)\n";
   if (gyroSupported) {
     std::cout << "  🌀 Gyroscope: Tilt device to move food in Level 2!\n";
   }
@@ -1993,6 +2373,12 @@ int main() {
     if (!gamePaused && !exitConfirmation && !resetConfirmation &&
         currentTime - lastMoveTime > MOVE_INTERVAL) {
       updateGame();
+      
+      // Write to IPC buffer if in IPC mode
+      if (ipcMode) {
+        writeIPCSlot();
+      }
+      
       lastMoveTime = currentTime;
     }
 
@@ -2013,6 +2399,7 @@ int main() {
   // Cleanup
   cleanupRumble();
   cleanupGyroscope();
+  cleanupIPC();
   if (gameController) {
     SDL_GameControllerClose(gameController);
   }

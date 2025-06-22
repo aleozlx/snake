@@ -15,12 +15,19 @@ target_include_directories(glad
     PUBLIC "${CMAKE_SOURCE_DIR}/external/linux-headers/include"
 )
 
+# global include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
+
+
+
+
 
 if(FALSE)
     add_subdirectory(.hello)
 endif()
 
+add_subdirectory(ipc)
+add_subdirectory(tests)
 add_subdirectory(snake0)
 add_subdirectory(snake1)
 add_subdirectory(snake2)
