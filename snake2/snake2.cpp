@@ -808,6 +808,9 @@ bool initializeGyroscope() {
     case SDL_SENSOR_ACCEL_R:
       hasRightAccel = true;
       break;
+    case SDL_SENSOR_INVALID:
+    case SDL_SENSOR_UNKNOWN:
+      break;
     }
 
     std::cout << "Sensor " << i << ":" << std::endl;
