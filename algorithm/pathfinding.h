@@ -40,4 +40,9 @@ Point calculateNaivePathDirection(const Point& start, const Point& target,
 // A* pathfinding direction calculation
 Point calculateAStarPathDirection(const Point& start, const Point& target, 
                                  int gridWidth, int gridHeight,
-                                 IsPositionOccupiedCallback isOccupied, void* context); 
+                                 IsPositionOccupiedCallback isOccupied, void* context);
+
+// Greedy pathfinding with axis prioritization (prioritizes larger distance axis first)
+Point calculateGreedyAxisPathDirection(const Point& start, const Point& target, 
+                                      int gridWidth, int gridHeight,
+                                      IsPositionOccupiedCallback isOccupied, void* context); 

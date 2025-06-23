@@ -218,4 +218,50 @@ Point calculateAStarPathDirection(const Point& start, const Point& target,
   
   // Fallback to naive algorithm if A* fails
   return calculateNaivePathDirection(start, target, gridWidth, gridHeight, isOccupied, context, Point(0, 0));
+}
+
+// Greedy pathfinding with axis prioritization (prioritizes larger distance axis first)
+Point calculateGreedyAxisPathDirection(const Point& start, const Point& target, 
+                                      int gridWidth, int gridHeight,
+                                      IsPositionOccupiedCallback isOccupied, void* context) {
+  // Calculate direction toward target
+  int dx = target.x - start.x;
+  int dy = target.y - start.y;
+  
+  // Try to move toward target, prioritizing the axis with greater distance
+  std::vector<Point> possibleMoves;
+  
+  if (abs(dx) >= abs(dy)) {
+    // Prioritize horizontal movement
+    if (dx > 0) possibleMoves.push_back(Point(1, 0));   // Right
+    if (dx < 0) possibleMoves.push_back(Point(-1, 0));  // Left
+    if (dy > 0) possibleMoves.push_back(Point(0, 1));   // Up
+    if (dy < 0) possibleMoves.push_back(Point(0, -1));  // Down
+  } else {
+    // Prioritize vertical movement
+    if (dy > 0) possibleMoves.push_back(Point(0, 1));   // Up
+    if (dy < 0) possibleMoves.push_back(Point(0, -1));  // Down
+    if (dx > 0) possibleMoves.push_back(Point(1, 0));   // Right
+    if (dx < 0) possibleMoves.push_back(Point(-1, 0));  // Left
+  }
+  
+  // Try each possible move in order of preference
+  for (const auto& move : possibleMoves) {
+    Point newPos = Point(start.x + move.x, start.y + move.y);
+    if (!isOccupied(newPos, context)) {
+      return move;
+    }
+  }
+  
+  // If no preferred move is valid, try any valid move
+  std::vector<Point> allMoves = {Point(1, 0), Point(-1, 0), Point(0, 1), Point(0, -1)};
+  for (const auto& move : allMoves) {
+    Point newPos = Point(start.x + move.x, start.y + move.y);
+    if (!isOccupied(newPos, context)) {
+      return move;
+    }
+  }
+  
+  // No valid moves - stay still
+  return Point(0, 0);
 } 

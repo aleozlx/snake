@@ -28,11 +28,13 @@ namespace Colors {
 
 // Game entity colors
 namespace GameColors {
-    // Snake colors (for multiplayer)
-    constexpr RGBColor SNAKE_PLAYER1 = Colors::GREEN;   // Primary snake (keyboard + controller 0)
-    constexpr RGBColor SNAKE_PLAYER2 = Colors::RED;     // Controller 1
-    constexpr RGBColor SNAKE_PLAYER3 = Colors::BLUE;    // Controller 2
-    constexpr RGBColor SNAKE_PLAYER4 = Colors::YELLOW;  // Controller 3
+    // Snake player colors array for multiplayer (indexed by player number)
+    constexpr RGBColor SNAKE_PLAYERS[4] = {
+        Colors::GREEN,   // snake[0] (keyboard + controller 0)
+        Colors::RED,     // snake[1] (controller 1)
+        Colors::BLUE,    // snake[2] (controller 2)
+        Colors::YELLOW,  // snake[3] (controller 3)
+    };
     
     // AI Snake colors
     constexpr RGBColor SNAKE_AI = Colors::PINK;

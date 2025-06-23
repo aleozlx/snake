@@ -47,26 +47,14 @@ public:
     
 private:
     void initializeGame() {
-        // Initialize game state
         m_gridWidth = m_app->getConfig().gridWidth;
         m_gridHeight = m_app->getConfig().gridHeight;
         
-        // Initialize unified tile grid system
         m_tileGrid = std::make_unique<TileGrid>(m_gridWidth, m_gridHeight);
         
-        // Determine number of snakes based on controllers
         int numControllers = m_app->getNumControllers();
         int totalSnakes = std::min(4, std::max(1, numControllers));
         
-        // Snake colors
-        RGBColor colors[] = {
-            GameColors::SNAKE_PLAYER1,  // Green - snake[0] (keyboard + controller 0)
-            GameColors::SNAKE_PLAYER2,  // Red - snake[1] (controller 1)
-            GameColors::SNAKE_PLAYER3,  // Blue - snake[2] (controller 2)
-            GameColors::SNAKE_PLAYER4,  // Yellow - snake[3] (controller 3)
-        };
-        
-        // Create snakes
         m_snakes.clear();
         int startX = m_gridWidth / 2;
         int startY = m_gridHeight / 2;
@@ -76,15 +64,12 @@ private:
             int offsetY = (i % 2 == 0) ? 0 : ((i % 4 < 2) ? 2 : -2);
             
             Snake snake(startX + offsetX, startY + offsetY, Point(1, 0));
-            snake.color = colors[i];
+            snake.color = GameColors::SNAKE_PLAYERS[i];
             snake.score = 0;
             m_snakes.push_back(snake);
         }
         
-        // Initialize level-specific features
         initializeLevelFeatures();
-        
-        // Place food
         placeFood();
         
         m_gameOver = false;
@@ -133,19 +118,16 @@ private:
     }
     
     void onRender(const Event& event) {
-        // Clear screen
         glClear(GL_COLOR_BUFFER_BIT);
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         
-        // Use shader
         glUseProgram(m_app->getShaderProgram());
         glBindVertexArray(m_app->getVAO());
         
-        // Draw game elements in same order as original snake2.cpp
         drawFood();
-        drawPacman();  // Level 1 feature
+        drawPacman();
         drawSnakes();
-        drawAISnakes(); // Level 2+ feature
+        drawAISnakes();
         
         // Check if any snake is paused for UI rendering
         bool anySnakePaused = false;
@@ -156,7 +138,6 @@ private:
             }
         }
         
-        // Draw UI elements
         m_ui.renderUI(m_snakes, m_aiSnakes, m_level, m_gamePaused, anySnakePaused);
         
         // Draw confirmation dialogues LAST (on top of everything)
@@ -171,7 +152,6 @@ private:
         std::cout << "⌨️ Keyboard input: " << key << std::endl;
         
         switch (key) {
-            // Movement keys - Arrow keys
             case SDLK_UP:
                 changeSnakeDirection(0, Point(0, 1));
                 break;
@@ -185,7 +165,6 @@ private:
                 changeSnakeDirection(0, Point(1, 0));
                 break;
             
-            // Movement keys - WASD
             case SDLK_w:
                 changeSnakeDirection(0, Point(0, 1));
                 break;
@@ -199,7 +178,6 @@ private:
                 changeSnakeDirection(0, Point(1, 0));
                 break;
             
-            // Action keys
             case SDLK_RETURN: // Enter = A button
                 if (m_ui.isExitConfirmationShown()) {
                     std::cout << "Exit confirmed!" << std::endl;
@@ -237,11 +215,11 @@ private:
                 }
                 break;
             
-            case SDLK_PAGEUP: // Page Up = Right Shoulder
+            case SDLK_PAGEUP:
                 changeLevelUp();
                 break;
             
-            case SDLK_PAGEDOWN: // Page Down = Left Shoulder  
+            case SDLK_PAGEDOWN:
                 changeLevelDown();
                 break;
         }
@@ -413,14 +391,12 @@ private:
         Point newHead = Point(snake.body[0].x + snake.direction.x, 
                              snake.body[0].y + snake.direction.y);
         
-        // Check collision
         if (isCollision(newHead, snakeIndex)) {
             snake.movementPaused = true;
             std::cout << "🔴 Snake " << snakeIndex << " collision!" << std::endl;
             return;
         }
         
-        // Resume movement if was paused
         if (snake.movementPaused) {
             snake.movementPaused = false;
             std::cout << "🟢 Snake " << snakeIndex << " movement resumed!" << std::endl;
@@ -435,20 +411,17 @@ private:
         // Update tile grid with current game state
         updateTileGrid();
         
-        // Use unified tile grid for O(1) collision detection
         if (!m_tileGrid->isValidPosition(pos.x, pos.y)) {
             return true; // Out of bounds
         }
         
         TileContent tile = m_tileGrid->getTile(pos.x, pos.y);
         
-        // Empty tiles and food are not collisions
         if (tile == TileContent::EMPTY || tile == TileContent::FOOD) {
             return false;
         }
         
-        // Everything else is a collision
-        return true;
+        return true; // Everything else is a collision
     }
     
     // Helper method to update the tile grid with current game state
@@ -469,7 +442,6 @@ private:
             return;
         }
         
-        // Test if new direction would cause immediate collision
         Point testHead = Point(snake.body[0].x + newDirection.x, 
                               snake.body[0].y + newDirection.y);
         
@@ -487,14 +459,12 @@ private:
         std::uniform_int_distribution<> disX(1, m_gridWidth - 2);
         std::uniform_int_distribution<> disY(1, m_gridHeight - 2);
         
-        // Update tile grid with current game state (excluding food position)
         updateTileGrid();
         
         bool validPlacement = false;
         do {
             m_food = Point(disX(gen), disY(gen));
             
-            // Use tile grid for O(1) collision checking
             if (m_tileGrid && m_tileGrid->isValidPosition(m_food.x, m_food.y)) {
                 TileContent tile = m_tileGrid->getTile(m_food.x, m_food.y);
                 validPlacement = (tile == TileContent::EMPTY);
@@ -556,15 +526,12 @@ private:
     }
     
     void initializeLevelFeatures() {
-        // Clear existing level-specific features
         m_aiSnakes.clear();
         m_pacmanActive = false;
         
         if (m_level == 1) {
-            // Level 1: Pacman mode
             initializePacman();
         } else if (m_level >= 2) {
-            // Level 2+: AI Snake mode
             initializeAISnakes();
         }
         
@@ -580,7 +547,6 @@ private:
                                      m_app->getUseTextureUniform(), m_app->getAspectRatioUniform());
     }
 
-    // Rendering methods
     void drawFood() {
         auto ctx = getDrawContext();
         GLuint appleTexture = m_app->getAppleTexture();
@@ -607,7 +573,6 @@ private:
                     // Purple when movement is paused (collision)
                     segmentColor = StateColors::MOVEMENT_BLOCKED * intensity;
                 } else {
-                    // Normal snake color with intensity
                     segmentColor = snake.color * intensity;
                 }
                 
@@ -624,7 +589,6 @@ private:
     
     // Snake eye rendering moved to SnakeDraw namespace
     
-    // Draw Pacman (Level 1 feature)
     void drawPacman() {
         if (!m_pacmanActive) return;
         
@@ -632,7 +596,6 @@ private:
         SnakeDraw::drawPacman(m_pacman, m_pacmanDirection, ctx);
     }
     
-    // Draw AI Snakes (Level 2+ feature)
     void drawAISnakes() {
         for (size_t aiIdx = 0; aiIdx < m_aiSnakes.size(); aiIdx++) {
             const Snake& aiSnake = m_aiSnakes[aiIdx];
@@ -654,7 +617,6 @@ private:
                     // Purple when movement is paused (collision)
                     segmentColor = StateColors::MOVEMENT_BLOCKED * intensity;
                 } else {
-                    // Normal AI snake color with intensity
                     segmentColor = aiSnake.color * intensity;
                 }
                 
@@ -790,12 +752,15 @@ private:
     }
     
     bool isOccupiedBySnake(const Point& pos) {
-        for (const auto& snake : m_snakes) {
-            for (const auto& segment : snake.body) {
-                if (pos == segment) return true;
-            }
+        // Update tile grid with current game state
+        updateTileGrid();
+        
+        if (!m_tileGrid || !m_tileGrid->isValidPosition(pos.x, pos.y)) {
+            return false;
         }
-        return false;
+        
+        TileContent tile = m_tileGrid->getTile(pos.x, pos.y);
+        return (tile == TileContent::SNAKE_HEAD || tile == TileContent::SNAKE_BODY);
     }
     
     // Pacman update logic (Level 1)
@@ -808,7 +773,7 @@ private:
         // Move pacman
         Point newPacmanPos = Point(m_pacman.x + m_pacmanDirection.x, m_pacman.y + m_pacmanDirection.y);
         
-        if (isValidPacmanMove(newPacmanPos)) {
+        if (!isPositionOccupiedForPacman(newPacmanPos)) {
             m_pacman = newPacmanPos;
             
             // Check if pacman got the food
@@ -823,68 +788,33 @@ private:
     Point calculatePacmanDirection() {
         if (!m_pacmanActive) return Point(0, 0);
         
-        // Calculate direction toward food
-        int dx = m_food.x - m_pacman.x;
-        int dy = m_food.y - m_pacman.y;
-        
-        // Try to move toward food, prioritizing the axis with greater distance
-        std::vector<Point> possibleMoves;
-        
-        if (abs(dx) >= abs(dy)) {
-            // Prioritize horizontal movement
-            if (dx > 0) possibleMoves.push_back(Point(1, 0));   // Right
-            if (dx < 0) possibleMoves.push_back(Point(-1, 0));  // Left
-            if (dy > 0) possibleMoves.push_back(Point(0, 1));   // Up
-            if (dy < 0) possibleMoves.push_back(Point(0, -1));  // Down
-        } else {
-            // Prioritize vertical movement
-            if (dy > 0) possibleMoves.push_back(Point(0, 1));   // Up
-            if (dy < 0) possibleMoves.push_back(Point(0, -1));  // Down
-            if (dx > 0) possibleMoves.push_back(Point(1, 0));   // Right
-            if (dx < 0) possibleMoves.push_back(Point(-1, 0));  // Left
-        }
-        
-        // Try each possible move in order of preference
-        for (const auto& move : possibleMoves) {
-            Point newPos = Point(m_pacman.x + move.x, m_pacman.y + move.y);
-            if (isValidPacmanMove(newPos)) {
-                return move;
-            }
-        }
-        
-        // If no preferred move is valid, try any valid move
-        std::vector<Point> allMoves = {Point(1, 0), Point(-1, 0), Point(0, 1), Point(0, -1)};
-        for (const auto& move : allMoves) {
-            Point newPos = Point(m_pacman.x + move.x, m_pacman.y + move.y);
-            if (isValidPacmanMove(newPos)) {
-                return move;
-            }
-        }
-        
-        // No valid moves - stay still
-        return Point(0, 0);
+        // Use pathfinding library with greedy axis prioritization algorithm
+        return calculateGreedyAxisPathDirection(m_pacman, m_food, m_gridWidth, m_gridHeight, 
+                                               isPositionOccupiedForPacmanCallback, this);
     }
     
-    // Helper function to check if a pacman move is valid - uses unified tile grid
-    bool isValidPacmanMove(const Point& newPos) {
-        // Update tile grid with current game state
+    // Callback function for Pacman pathfinding algorithm
+    static bool isPositionOccupiedForPacmanCallback(const Point& pos, void* context) {
+        SnakeGameLogic* game = static_cast<SnakeGameLogic*>(context);
+        return game->isPositionOccupiedForPacman(pos);
+    }
+    
+    // Helper method for Pacman pathfinding position checking - uses unified tile grid
+    bool isPositionOccupiedForPacman(const Point& pos) {
+        // Ensure tile grid is updated
         updateTileGrid();
         
-        // Use unified tile grid for O(1) collision detection
-        if (!m_tileGrid || !m_tileGrid->isValidPosition(newPos.x, newPos.y)) {
-            return false; // Out of bounds or tile grid not available
+        if (!m_tileGrid || !m_tileGrid->isValidPosition(pos.x, pos.y)) {
+            return true; // Out of bounds
         }
         
-        TileContent tile = m_tileGrid->getTile(newPos.x, newPos.y);
+        TileContent tile = m_tileGrid->getTile(pos.x, pos.y);
         
         // Pacman can move to empty tiles and food tiles, but not into snakes or AI snakes
-        if (tile == TileContent::EMPTY || tile == TileContent::FOOD) {
-            return true;
-        }
-        
-        // Everything else is a collision
-        return false;
+        return !(tile == TileContent::EMPTY || tile == TileContent::FOOD);
     }
+    
+
     
     // AI Snake update logic (Level 2+)
     void updateAISnakes() {
