@@ -1,8 +1,3 @@
-//
-// Refactored Snake Game - Event-Driven Architecture
-// This demonstrates the separation of app infrastructure from game logic
-//
-
 #include "snake_dep.h"
 #include "pathfinding.h"
 #include "snake_draw.h"
@@ -17,8 +12,6 @@
 
 // Use centralized color theme
 using namespace SnakeTheme;
-
-// ===== GAME LOGIC (Event-driven) =====
 
 class SnakeGameLogic {
 public:
@@ -516,8 +509,6 @@ private:
         
         // Only reinitialize level-specific features, keep existing snakes
         initializeLevelFeatures();
-        
-        // Place new food (avoiding existing snakes)
         placeFood();
     }
     
@@ -582,8 +573,6 @@ private:
             }
         }
     }
-    
-    // Snake eye rendering moved to SnakeDraw namespace
     
     void drawPacman() {
         if (!m_pacmanActive) return;
