@@ -1,3 +1,8 @@
+#pragma once
+
+// Fundamental types for the snake game
+// No other header dependency here
+
 struct ix2 {
     union {
         struct { int x, y; };

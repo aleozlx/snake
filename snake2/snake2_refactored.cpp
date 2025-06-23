@@ -51,6 +51,9 @@ private:
         m_gridWidth = m_app->getConfig().gridWidth;
         m_gridHeight = m_app->getConfig().gridHeight;
         
+        // Initialize unified tile grid system
+        m_tileGrid = std::make_unique<TileGrid>(m_gridWidth, m_gridHeight);
+        
         // Determine number of snakes based on controllers
         int numControllers = m_app->getNumControllers();
         int totalSnakes = std::min(4, std::max(1, numControllers));
@@ -429,41 +432,30 @@ private:
     }
     
     bool isCollision(const Point& pos, int snakeIndex) {
-        // Check boundaries
-        if (pos.x <= 0 || pos.x >= m_gridWidth - 1 || 
-            pos.y <= 0 || pos.y >= m_gridHeight - 1) {
-            return true;
+        // Update tile grid with current game state
+        updateTileGrid();
+        
+        // Use unified tile grid for O(1) collision detection
+        if (!m_tileGrid->isValidPosition(pos.x, pos.y)) {
+            return true; // Out of bounds
         }
         
-        // Check self collision for the specific snake
-        if (snakeIndex >= 0 && snakeIndex < m_snakes.size()) {
-            for (const auto& segment : m_snakes[snakeIndex].body) {
-                if (pos == segment) return true;
-            }
+        TileContent tile = m_tileGrid->getTile(pos.x, pos.y);
+        
+        // Empty tiles and food are not collisions
+        if (tile == TileContent::EMPTY || tile == TileContent::FOOD) {
+            return false;
         }
         
-        // Check collision with other player snakes
-        for (int i = 0; i < m_snakes.size(); i++) {
-            if (i != snakeIndex) { // Don't check against self
-                for (const auto& segment : m_snakes[i].body) {
-                    if (pos == segment) return true;
-                }
-            }
-        }
+        // Everything else is a collision
+        return true;
+    }
+    
+    // Helper method to update the tile grid with current game state
+    void updateTileGrid() {
+        if (!m_tileGrid) return;
         
-        // Check collision with AI snakes
-        for (const auto& aiSnake : m_aiSnakes) {
-            for (const auto& segment : aiSnake.body) {
-                if (pos == segment) return true;
-            }
-        }
-        
-        // Check pacman collision - if pacman is in the way, treat as collision
-        if (m_pacmanActive && pos == m_pacman) {
-            return true;
-        }
-        
-        return false;
+        m_tileGrid->updateFromGameState(m_snakes, m_aiSnakes, m_food, m_pacmanActive, m_pacman);
     }
     
     void changeSnakeDirection(int snakeIndex, const Point& newDirection) {
@@ -495,37 +487,18 @@ private:
         std::uniform_int_distribution<> disX(1, m_gridWidth - 2);
         std::uniform_int_distribution<> disY(1, m_gridHeight - 2);
         
+        // Update tile grid with current game state (excluding food position)
+        updateTileGrid();
+        
         bool validPlacement = false;
         do {
             m_food = Point(disX(gen), disY(gen));
-            validPlacement = true;
             
-            // Check against player snakes
-            for (const auto& snake : m_snakes) {
-                for (const auto& segment : snake.body) {
-                    if (m_food == segment) {
-                        validPlacement = false;
-                        break;
-                    }
-                }
-                if (!validPlacement) break;
-            }
-            
-            // Check against AI snakes
-            if (validPlacement) {
-                for (const auto& aiSnake : m_aiSnakes) {
-                    for (const auto& segment : aiSnake.body) {
-                        if (m_food == segment) {
-                            validPlacement = false;
-                            break;
-                        }
-                    }
-                    if (!validPlacement) break;
-                }
-            }
-            
-            // Check against pacman
-            if (validPlacement && m_pacmanActive && m_food == m_pacman) {
+            // Use tile grid for O(1) collision checking
+            if (m_tileGrid && m_tileGrid->isValidPosition(m_food.x, m_food.y)) {
+                TileContent tile = m_tileGrid->getTile(m_food.x, m_food.y);
+                validPlacement = (tile == TileContent::EMPTY);
+            } else {
                 validPlacement = false;
             }
         } while (!validPlacement);
@@ -892,22 +865,25 @@ private:
         return Point(0, 0);
     }
     
-    // Helper function to check if a pacman move is valid
+    // Helper function to check if a pacman move is valid - uses unified tile grid
     bool isValidPacmanMove(const Point& newPos) {
-        // Check boundary collision
-        if (newPos.x <= 0 || newPos.x >= m_gridWidth - 1 || 
-            newPos.y <= 0 || newPos.y >= m_gridHeight - 1) {
-            return false;
+        // Update tile grid with current game state
+        updateTileGrid();
+        
+        // Use unified tile grid for O(1) collision detection
+        if (!m_tileGrid || !m_tileGrid->isValidPosition(newPos.x, newPos.y)) {
+            return false; // Out of bounds or tile grid not available
         }
         
-        // Check snake collision - pacman can't move into snake
-        for (const auto& snake : m_snakes) {
-            for (const auto& segment : snake.body) {
-                if (newPos == segment) return false;
-            }
+        TileContent tile = m_tileGrid->getTile(newPos.x, newPos.y);
+        
+        // Pacman can move to empty tiles and food tiles, but not into snakes or AI snakes
+        if (tile == TileContent::EMPTY || tile == TileContent::FOOD) {
+            return true;
         }
         
-        return true;
+        // Everything else is a collision
+        return false;
     }
     
     // AI Snake update logic (Level 2+)
@@ -981,34 +957,14 @@ private:
         return game->isPositionOccupiedForPathfinding(pos);
     }
     
-    // Helper method for pathfinding position checking
+    // Helper method for pathfinding position checking - uses unified tile grid
     bool isPositionOccupiedForPathfinding(const Point& pos) {
-        // Check boundaries
-        if (pos.x <= 0 || pos.x >= m_gridWidth - 1 || 
-            pos.y <= 0 || pos.y >= m_gridHeight - 1) {
-            return true;
-        }
+        // Ensure tile grid is updated
+        updateTileGrid();
         
-        // Check collision with player snakes
-        for (const auto& snake : m_snakes) {
-            for (const auto& segment : snake.body) {
-                if (pos == segment) return true;
-            }
-        }
-        
-        // Check collision with AI snakes
-        for (const auto& aiSnake : m_aiSnakes) {
-            for (const auto& segment : aiSnake.body) {
-                if (pos == segment) return true;
-            }
-        }
-        
-        // Check pacman collision
-        if (m_pacmanActive && pos == m_pacman) {
-            return true;
-        }
-        
-        return false;
+        // Use tile grid for O(1) pathfinding queries
+        if (!m_tileGrid) return true;
+        return m_tileGrid->isPathBlocked(pos);
     }
     
     // Naive pathfinding (original algorithm) - uses pathfinding library
@@ -1060,116 +1016,39 @@ private:
         }
     }
     
-    // Helper function to check if an AI snake move is valid
+    // Helper function to check if an AI snake move is valid - uses unified tile grid
     bool isValidMoveForAISnake(const Point& newHead, int aiSnakeIndex) {
-        // Check boundary collision
-        if (newHead.x <= 0 || newHead.x >= m_gridWidth - 1 || 
-            newHead.y <= 0 || newHead.y >= m_gridHeight - 1) {
-            return false;
+        // Update tile grid with current game state
+        updateTileGrid();
+        
+        // Use unified tile grid for O(1) collision detection
+        if (!m_tileGrid || !m_tileGrid->isValidPosition(newHead.x, newHead.y)) {
+            return false; // Out of bounds or tile grid not available
         }
         
-        // Check self collision for the specific AI snake
-        if (aiSnakeIndex >= 0 && aiSnakeIndex < m_aiSnakes.size()) {
-            for (const auto& segment : m_aiSnakes[aiSnakeIndex].body) {
-                if (newHead == segment) return false;
-            }
+        TileContent tile = m_tileGrid->getTile(newHead.x, newHead.y);
+        
+        // AI snakes can move to empty tiles and food tiles
+        if (tile == TileContent::EMPTY || tile == TileContent::FOOD) {
+            return true;
         }
         
-        // Check collision with player snakes
-        for (const auto& snake : m_snakes) {
-            for (const auto& segment : snake.body) {
-                if (newHead == segment) return false;
-            }
-        }
-        
-        // Check collision with other AI snakes
-        for (int i = 0; i < m_aiSnakes.size(); i++) {
-            if (i != aiSnakeIndex) { // Don't check against self
-                for (const auto& segment : m_aiSnakes[i].body) {
-                    if (newHead == segment) return false;
-                }
-            }
-        }
-        
-        // Check pacman collision
-        if (m_pacmanActive && newHead == m_pacman) {
-            return false;
-        }
-        
-        return true;
+        // Everything else is a collision
+        return false;
     }
     
-    // IPC functionality
+    // IPC functionality - now uses unified tile grid
     void createIPCGridData(char* gridData) {
-        // Initialize grid with spaces (empty)
-        for (int i = 0; i < m_gridWidth * m_gridHeight; i++) {
-            gridData[i] = ' ';
-        }
+        // Update tile grid with current game state
+        updateTileGrid();
         
-        // Draw border
-        for (int x = 0; x < m_gridWidth; x++) {
-            gridData[0 * m_gridWidth + x] = '#';  // Top border
-            gridData[(m_gridHeight - 1) * m_gridWidth + x] = '#';  // Bottom border
-        }
-        for (int y = 0; y < m_gridHeight; y++) {
-            gridData[y * m_gridWidth + 0] = '#';  // Left border
-            gridData[y * m_gridWidth + (m_gridWidth - 1)] = '#';  // Right border
-        }
-        
-        // Draw corner markers
-        gridData[0 * m_gridWidth + 0] = 'Y';  // Yellow corner (top-left)
-        gridData[0 * m_gridWidth + (m_gridWidth - 1)] = 'C';  // Cyan corner (top-right)
-        gridData[(m_gridHeight - 1) * m_gridWidth + 0] = 'M';  // Magenta corner (bottom-left)
-        gridData[(m_gridHeight - 1) * m_gridWidth + (m_gridWidth - 1)] = 'W';  // White corner (bottom-right)
-        
-        // Draw food
-        if (m_food.x >= 0 && m_food.x < m_gridWidth && m_food.y >= 0 && m_food.y < m_gridHeight) {
-            gridData[m_food.y * m_gridWidth + m_food.x] = 'F';  // Food
-        }
-        
-        // Draw pacman if active
-        if (m_pacmanActive && m_pacman.x >= 0 && m_pacman.x < m_gridWidth && 
-            m_pacman.y >= 0 && m_pacman.y < m_gridHeight) {
-            gridData[m_pacman.y * m_gridWidth + m_pacman.x] = 'P';  // Pacman
-        }
-        
-        // Draw player snakes (body first, then head on top)
-        for (const auto& snake : m_snakes) {
-            for (size_t i = snake.body.size(); i > 0; i--) {
-                const Point& segment = snake.body[i - 1];
-                if (segment.x >= 0 && segment.x < m_gridWidth && 
-                    segment.y >= 0 && segment.y < m_gridHeight) {
-                    if (i == 1) {
-                        // Snake head
-                        if (snake.movementPaused) {
-                            gridData[segment.y * m_gridWidth + segment.x] = 'H';  // Paused head
-                        } else {
-                            gridData[segment.y * m_gridWidth + segment.x] = 'S';  // Snake head
-                        }
-                    } else {
-                        gridData[segment.y * m_gridWidth + segment.x] = 's';  // Snake body
-                    }
-                }
-            }
-        }
-        
-        // Draw AI snakes (body first, then head on top)
-        for (const auto& aiSnake : m_aiSnakes) {
-            for (size_t i = aiSnake.body.size(); i > 0; i--) {
-                const Point& segment = aiSnake.body[i - 1];
-                if (segment.x >= 0 && segment.x < m_gridWidth && 
-                    segment.y >= 0 && segment.y < m_gridHeight) {
-                    if (i == 1) {
-                        // AI Snake head
-                        if (aiSnake.movementPaused) {
-                            gridData[segment.y * m_gridWidth + segment.x] = 'A';  // Paused AI head
-                        } else {
-                            gridData[segment.y * m_gridWidth + segment.x] = 'I';  // AI head
-                        }
-                    } else {
-                        gridData[segment.y * m_gridWidth + segment.x] = 'i';  // AI body
-                    }
-                }
+        // Use unified tile grid to generate IPC data
+        if (m_tileGrid) {
+            m_tileGrid->createIPCGrid(gridData);
+        } else {
+            // Fallback: initialize with spaces if tile grid is not available
+            for (int i = 0; i < m_gridWidth * m_gridHeight; i++) {
+                gridData[i] = ' ';
             }
         }
     }
@@ -1177,6 +1056,9 @@ private:
 private:
     SnakeApp* m_app;
     SnakeUI m_ui;
+    
+    // Unified tile grid system for collision detection, pathfinding, and IPC
+    std::unique_ptr<TileGrid> m_tileGrid;  
     
     // Game state
     std::vector<Snake> m_snakes;

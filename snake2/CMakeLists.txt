@@ -16,6 +16,7 @@ add_executable(snake2_refactored
     snake_draw.cpp
     snake_app.cpp
     snake_ui.cpp
+    tile_grid.cpp
     snake2_refactored.cpp
 )
 target_link_libraries(snake2_refactored 

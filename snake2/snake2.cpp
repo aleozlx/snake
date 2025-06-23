@@ -73,22 +73,8 @@ int GRID_WIDTH = 32;
 int GRID_HEIGHT = 20;
 #endif
 
-// Tile content tracking for efficient collision detection
-enum TileContent {
-  TILE_EMPTY = 0,
-  TILE_BORDER = 1,
-  TILE_SNAKE_HEAD = 2,
-  TILE_SNAKE_BODY = 3,
-  TILE_AI_SNAKE_HEAD = 4,
-  TILE_AI_SNAKE_BODY = 5,
-  TILE_PACMAN = 6,
-  TILE_FOOD = 7
-};
-
 // 2D array to track what's in each tile (allocated dynamically based on grid size)
 TileContent** tileGrid = nullptr;
-
-
 
 // Gyroscope and food physics (Level 2+ feature)
 bool gyroSupported = false;
@@ -102,9 +88,6 @@ const float GYRO_SENSITIVITY = 0.5f;    // How much gyro affects food movement
 const float FOOD_BOUNCE_DAMPING = 0.7f; // Energy loss when bouncing off walls
 float lastGyroUpdateTime = 0.0f;
 const float GYRO_UPDATE_INTERVAL = 0.016f; // ~60 FPS for smooth physics
-
-// Game state
-
 
 // Game state
 std::vector<Snake> snakes; // Multiple snakes instead of single snake
@@ -196,7 +179,7 @@ bool isPositionOccupiedCallback(const Point& pos, void* context) {
   // Use tile grid for O(1) lookup if available
   if (tileGrid != nullptr && pos.x >= 0 && pos.x < GRID_WIDTH && pos.y >= 0 && pos.y < GRID_HEIGHT) {
     TileContent content = tileGrid[pos.x][pos.y];
-    return content != TILE_EMPTY && content != TILE_FOOD;
+    return content != TileContent::EMPTY && content != TileContent::FOOD;
   }
   
   // Fallback to original method if tile grid is not available
@@ -252,9 +235,9 @@ void clearTileGrid() {
   for (int x = 0; x < GRID_WIDTH; x++) {
     for (int y = 0; y < GRID_HEIGHT; y++) {
       if (x == 0 || x == GRID_WIDTH - 1 || y == 0 || y == GRID_HEIGHT - 1) {
-        tileGrid[x][y] = TILE_BORDER;
+        tileGrid[x][y] = TileContent::BORDER;
       } else {
-        tileGrid[x][y] = TILE_EMPTY;
+        tileGrid[x][y] = TileContent::EMPTY;
       }
     }
   }
@@ -1391,7 +1374,7 @@ void render() {
   clearTileGrid();
 
   // Draw food (apple texture)
-  setTileContent(food.x, food.y, TILE_FOOD);
+  setTileContent(food.x, food.y, TileContent::FOOD);
   if (appleTexture != 0) {
     drawTexturedSquare(food.x, food.y, appleTexture);
   } else {
@@ -1401,7 +1384,7 @@ void render() {
 
   // Draw pacman (if active) - yellow circle with black circle mouth
   if (pacmanActive) {
-    setTileContent(pacman.x, pacman.y, TILE_PACMAN);
+    setTileContent(pacman.x, pacman.y, TileContent::PACMAN);
     // Calculate cell dimensions and position
     float cellWidth = 2.0f / GRID_WIDTH;
     float cellHeight = 2.0f / GRID_HEIGHT;
@@ -1689,7 +1672,7 @@ void render() {
       }
       
       // Update tile grid
-      TileContent tileType = (i == 0) ? TILE_SNAKE_HEAD : TILE_SNAKE_BODY;
+      TileContent tileType = (i == 0) ? TileContent::SNAKE_HEAD : TileContent::SNAKE_BODY;
       setTileContent(currentSnake.body[i].x, currentSnake.body[i].y, tileType);
       
       drawSquare(currentSnake.body[i].x, currentSnake.body[i].y, r, g, b);
@@ -1735,7 +1718,7 @@ void render() {
       }
       
       // Update tile grid
-      TileContent tileType = (i == 0) ? TILE_AI_SNAKE_HEAD : TILE_AI_SNAKE_BODY;
+      TileContent tileType = (i == 0) ? TileContent::AI_SNAKE_HEAD : TileContent::AI_SNAKE_BODY;
       setTileContent(aiSnake.body[i].x, aiSnake.body[i].y, tileType);
       
       drawSquare(aiSnake.body[i].x, aiSnake.body[i].y, r, g, b);

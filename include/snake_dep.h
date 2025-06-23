@@ -7,6 +7,7 @@
 #include <SDL2/SDL.h>
 #endif
 #include <vector>
+#include <cstdint>
 
 #include "snake_types.h"
 
@@ -60,4 +61,58 @@ struct Snake {
         body.push_back(Point(startX - startDir.x, startY - startDir.y));
         body.push_back(Point(startX - 2*startDir.x, startY - 2*startDir.y));
     }
+};
+
+// Tile Content System - unified data structure for collision detection, pathfinding, and IPC
+enum class TileContent : uint8_t {
+    EMPTY = 0,
+    BORDER = 1,
+    SNAKE_HEAD = 2,
+    SNAKE_BODY = 3,
+    AI_SNAKE_HEAD = 4,
+    AI_SNAKE_BODY = 5,
+    PACMAN = 6,
+    FOOD = 7
+};
+
+// Tile Grid Management
+class TileGrid {
+public:
+    TileGrid(int width, int height);
+    ~TileGrid();
+    
+    // Basic operations
+    void clear();
+    void setBorder();
+    TileContent getTile(int x, int y) const;
+    void setTile(int x, int y, TileContent content);
+    bool isOccupied(int x, int y) const;
+    bool isValidPosition(int x, int y) const;
+    
+    // Bulk operations for efficiency
+    void updateFromGameState(const std::vector<Snake>& playerSnakes, 
+                           const std::vector<Snake>& aiSnakes,
+                           const Point& food, 
+                           bool pacmanActive, const Point& pacman);
+    
+    // IPC grid generation (char-based for compatibility)
+    void createIPCGrid(char* gridData) const;
+    
+    // Pathfinding support
+    bool isPathBlocked(const Point& pos) const;
+    
+    // Debugging
+    void debugPrint() const;
+    
+    // Getters
+    int getWidth() const { return m_width; }
+    int getHeight() const { return m_height; }
+    
+private:
+    int m_width, m_height;
+    TileContent** m_grid;
+    
+    void allocateGrid();
+    void deallocateGrid();
+    char tileToIPCChar(TileContent tile, int x, int y) const;
 };
