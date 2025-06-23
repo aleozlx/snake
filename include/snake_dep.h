@@ -19,9 +19,18 @@ struct Point : ix2 {
 
 // RGB Color structure (inherits from fx3)
 struct RGBColor : fx3 {
-    // Constructor with RGB values
-    RGBColor(float red = 0.f, float green = 0.f, float blue = 0.f) : fx3(red, green, blue) {}
+    // Constructor with RGB values - now constexpr
+    constexpr RGBColor(float red = 0.f, float green = 0.f, float blue = 0.f) : fx3(red, green, blue) {}
+
+    // Allow conversion from fx3 and enable fx3 operators
     inline RGBColor(const fx3& other) : fx3(other) {}
+    
+    // Common color blending operations
+    static RGBColor blend(const RGBColor& a, const RGBColor& b, float t) {
+        return RGBColor(a.r + t * (b.r - a.r), 
+                        a.g + t * (b.g - a.g), 
+                        a.b + t * (b.b - a.b));
+    }
 };
 
 // Navigation algorithm types for AI snakes

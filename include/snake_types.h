@@ -27,8 +27,8 @@ struct fx3 {
         float d[3];
     };
     
-    // Default constructor
-    fx3(float x = 0.0f, float y = 0.0f, float z = 0.0f) : x(x), y(y), z(z) {}
+    // Default constructor - now constexpr
+    constexpr fx3(float x = 0.0f, float y = 0.0f, float z = 0.0f) : x(x), y(y), z(z) {}
 
     // Default copy constructor andassignment operator
     fx3(const fx3&) = default;
@@ -42,8 +42,8 @@ struct fx3 {
         return x == other.x && y == other.y && z == other.z;
     }
     
-    // Multiply by a scalar
-    fx3 operator*(float s) const {
+    // Multiply by a scalar - also make constexpr
+    constexpr fx3 operator*(float s) const {
         return fx3(x * s, y * s, z * s);
     }
 };
