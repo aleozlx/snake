@@ -1,4 +1,11 @@
-#include "snake_dep.h"
+#include "snake_dep.h"  // IWYU pragma: keep
+#include <vector>
+#include <random>
+#include <iostream>
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <cstdlib>
 
 // Try to include SDL2_image if available
 #ifdef SDL_IMAGE_AVAILABLE
@@ -7,15 +14,6 @@
 #else
 #include <SDL2/SDL_image.h>
 #endif
-#endif
-
-// Linux force feedback includes for rumble support
-#ifdef __linux__
-#include <linux/input.h>
-#include <sys/ioctl.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <cstring>
 #endif
 
 // Vertex shader source for rendering squares, circles, and textures
@@ -98,13 +96,6 @@ void main() {
 int GRID_WIDTH = 32;
 int GRID_HEIGHT = 20;
 
-// Game state
-struct Point {
-    int x, y;
-    Point(int x = 0, int y = 0) : x(x), y(y) {}
-    bool operator==(const Point& other) const { return x == other.x && y == other.y; }
-};
-
 std::vector<Point> snake;
 Point food;
 Point direction(1, 0);
@@ -133,7 +124,6 @@ int lastButtonPressed = -1; // For visual debug
 float lastButtonTime = 0.0f;
 
 // Rumble/vibration system
-SDL_Haptic* haptic = nullptr;
 bool rumbleSupported = false;
 float rumbleEndTime = 0.0f; // When current rumble should end
 const float RUMBLE_DURATION = 0.3f; // Duration of rumble effect in seconds

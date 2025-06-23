@@ -1,4 +1,11 @@
-#include "snake_dep.h"
+#include <iostream>
+#include <glad/gl.h>
+#ifdef __APPLE__
+#include <SDL.h>
+#else
+#include <SDL2/SDL.h>
+#endif
+
 
 // Vertex shader source
 const char* vertexShaderSource = R"(

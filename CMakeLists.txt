@@ -17,10 +17,7 @@ target_include_directories(glad
 
 # global include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
-
-
-
-
+include_directories(${CMAKE_SOURCE_DIR}/algorithm)
 
 if(FALSE)
     add_subdirectory(.hello)

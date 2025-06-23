@@ -1,5 +1,18 @@
-#include "snake_dep.h"
+#include "snake_dep.h"  // IWYU pragma: keep
 #include "circular_buffer.h"
+#include "pathfinding.h"
+#include <algorithm>
+#include <fstream>
+#include <sstream>
+#include <vector>
+#include <random>
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <cstdlib>
 
 // Try to include SDL2_image if available
 #ifdef SDL_IMAGE_AVAILABLE
@@ -13,95 +26,43 @@
 // Debug mode for smaller grid in IPC mode
 #define IPC_DEBUG_SMALL_GRID 0  // Set to 1 to enable smaller grid for IPC debugging
 
-// Linux force feedback includes for rumble support
-#ifdef __linux__
-#include <cstring>
-#include <fcntl.h>
-#include <linux/input.h>
-#include <sys/ioctl.h>
-#include <unistd.h>
-#endif
-
-// Vertex shader source for rendering squares, circles, and textures
-const char *vertexShaderSource = R"(
-#version 330 core
-layout (location = 0) in vec2 aPos;
-layout (location = 1) in vec2 aTexCoord;
-uniform vec2 u_offset;
-uniform vec2 u_scale;
-out vec2 texCoord;
-out vec2 fragTexCoord;
-void main() {
-    texCoord = aPos;
-    fragTexCoord = aTexCoord;
-    vec2 pos = (aPos * u_scale) + u_offset;
-    gl_Position = vec4(pos, 0.0, 1.0);
+// Shader loading functions
+std::string loadShaderFromFile(const char* filepath) {
+  std::ifstream file(filepath);
+  if (!file.is_open()) {
+    std::cerr << "Failed to open shader file: " << filepath << std::endl;
+    return "";
+  }
+  
+  std::stringstream buffer;
+  buffer << file.rdbuf();
+  file.close();
+  
+  std::string content = buffer.str();
+  std::cout << "Loaded shader: " << filepath << " (" << content.length() << " bytes)" << std::endl;
+  return content;
 }
-)";
 
-// Fragment shader source with proper circle rendering and texture support
-const char *fragmentShaderSource = R"(
-#version 330 core
-in vec2 texCoord;
-in vec2 fragTexCoord;
-out vec4 FragColor;
-uniform vec3 u_color;
-uniform int u_shape_type; // 0 = rectangle, 1 = circle, 2 = ring, 3 = texture
-uniform float u_inner_radius; // For ring shapes
-uniform float u_aspect_ratio; // For correcting circle aspect ratio
-uniform sampler2D u_texture; // For texture rendering
-uniform bool u_use_texture; // Whether to use texture
-void main() {
-    if (u_shape_type == 3 || u_use_texture) {
-        // Texture rendering
-        vec4 texColor = texture(u_texture, fragTexCoord);
-        if (texColor.a < 0.1) discard; // Alpha testing for transparency
-        FragColor = texColor;
-    } else if (u_shape_type == 0) {
-        // Rectangle (default behavior)
-        FragColor = vec4(u_color, 1.0);
-    } else if (u_shape_type == 1) {
-        // Circle with anti-aliasing and aspect ratio correction
-        // Convert texture coordinates from [0,1] to [-1,1] centered
-        vec2 uv = (texCoord - 0.5) * 2.0;
-        
-        // Apply aspect ratio correction to make perfect circles
-        uv.y *= u_aspect_ratio;
-        
-        // Calculate distance from center
-        float dist = length(uv);
-        
-        // Create smooth circle with anti-aliasing
-        float radius = 1.0;
-        float smoothness = 0.1;
-        float alpha = 1.0 - smoothstep(radius - smoothness, radius + smoothness, dist);
-        
-        // Discard fragments outside the circle for performance
-        if (alpha < 0.01) discard;
-        
-        FragColor = vec4(u_color, alpha);
-    } else if (u_shape_type == 2) {
-        // Ring (hollow circle) with aspect ratio correction
-        vec2 uv = (texCoord - 0.5) * 2.0;
-        uv.y *= u_aspect_ratio; // Apply aspect ratio correction
-        float dist = length(uv);
-        
-        float outerRadius = 1.0;
-        float innerRadius = u_inner_radius * 2.0;
-        float smoothness = 0.1;
-        
-        float outerAlpha = 1.0 - smoothstep(outerRadius - smoothness, outerRadius + smoothness, dist);
-        float innerAlpha = smoothstep(innerRadius - smoothness, innerRadius + smoothness, dist);
-        
-        float alpha = outerAlpha * innerAlpha;
-        
-        // Discard fragments outside the ring
-        if (alpha < 0.01) discard;
-        
-        FragColor = vec4(u_color, alpha);
-    }
+GLuint compileShader(const std::string& source, GLenum shaderType, const char* shaderName) {
+  GLuint shader = glCreateShader(shaderType);
+  const char* sourcePtr = source.c_str();
+  glShaderSource(shader, 1, &sourcePtr, NULL);
+  glCompileShader(shader);
+  
+  // Check for compilation errors
+  GLint success;
+  glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+  if (!success) {
+    GLchar infoLog[512];
+    glGetShaderInfoLog(shader, 512, NULL, infoLog);
+    std::cerr << "ERROR: " << shaderName << " shader compilation failed:\n" << infoLog << std::endl;
+    glDeleteShader(shader);
+    return 0;
+  }
+  
+  std::cout << "✅ " << shaderName << " shader compiled successfully" << std::endl;
+  return shader;
 }
-)";
 
 // Game constants
 #if IPC_DEBUG_SMALL_GRID
@@ -111,6 +72,23 @@ int GRID_HEIGHT = 10;  // Maintain 1.6:1 aspect ratio (16:10)
 int GRID_WIDTH = 32;
 int GRID_HEIGHT = 20;
 #endif
+
+// Tile content tracking for efficient collision detection
+enum TileContent {
+  TILE_EMPTY = 0,
+  TILE_BORDER = 1,
+  TILE_SNAKE_HEAD = 2,
+  TILE_SNAKE_BODY = 3,
+  TILE_AI_SNAKE_HEAD = 4,
+  TILE_AI_SNAKE_BODY = 5,
+  TILE_PACMAN = 6,
+  TILE_FOOD = 7
+};
+
+// 2D array to track what's in each tile (allocated dynamically based on grid size)
+TileContent** tileGrid = nullptr;
+
+
 
 // Gyroscope and food physics (Level 2+ feature)
 bool gyroSupported = false;
@@ -126,35 +104,38 @@ float lastGyroUpdateTime = 0.0f;
 const float GYRO_UPDATE_INTERVAL = 0.016f; // ~60 FPS for smooth physics
 
 // Game state
-struct Point {
-  int x, y;
-  Point(int x = 0, int y = 0) : x(x), y(y) {}
-  bool operator==(const Point &other) const {
-    return x == other.x && y == other.y;
-  }
-};
 
-std::vector<Point> snake;
+
+// Game state
+std::vector<Snake> snakes; // Multiple snakes instead of single snake
+std::vector<Snake> aiSnakes; // AI-controlled snakes (separate for extensibility)
+int numControllers = 0;
+std::vector<SDL_GameController*> gameControllers; // Array of controllers
+
 Point food;
-Point direction(1, 0);
 bool gameOver = false;
-bool movementPaused = false;
 bool gamePaused = false;
 bool exitConfirmation = false;
 bool resetConfirmation = false;
 int score = 0;
-int level = 0; // Level system: 0=JUST SNAKE, 1=PACMAN, 2=GRAVITY
+int level = 0; // Level system: 0=JUST SNAKE, 1=PACMAN, 2=MULTI SNAKE
 float lastMoveTime = 0.0f;
 float MOVE_INTERVAL = 0.2f;
 float flashTimer = 0.0f;
 const float FLASH_INTERVAL = 0.1f;
 
-// Pacman state (level 1+ feature)
+// Pacman state (level 1 feature)
 Point pacman;
 Point pacmanDirection(0, 0); // Pacman's current direction
 float lastPacmanMoveTime = 0.0f;
 float PACMAN_MOVE_INTERVAL = 0.3f; // Pacman moves slightly slower than snake
-bool pacmanActive = false;         // Only active in level 1+
+bool pacmanActive = false;         // Only active in level 1
+
+// AI Snake state (level 2+ feature)
+float lastAISnakeMoveTime = 0.0f;
+float AI_SNAKE_MOVE_INTERVAL = 0.25f; // AI snake moves at moderate speed
+
+// A* pathfinding structures and functions moved to algorithm/pathfinding.h
 
 // Input tracking for gamepad display
 bool usingGamepadInput = false;
@@ -170,7 +151,6 @@ bool hasLeftAccel = false;
 bool hasRightAccel = false;
 
 // Rumble/vibration system
-SDL_Haptic *haptic = nullptr;
 bool rumbleSupported = false;
 float rumbleEndTime = 0.0f;         // When current rumble should end
 const float RUMBLE_DURATION = 0.3f; // Duration of rumble effect in seconds
@@ -178,7 +158,6 @@ const float RUMBLE_DURATION = 0.3f; // Duration of rumble effect in seconds
 // SDL2 variables
 SDL_Window *window = nullptr;
 SDL_GLContext glContext = nullptr;
-SDL_GameController *gameController = nullptr;
 bool running = true;
 
 // IPC Mode variables
@@ -203,22 +182,192 @@ float squareVertices[] = {
 
 GLuint indices[] = {0, 1, 2, 2, 3, 0};
 
+// Forward declarations
+bool isValidMoveForSnake(const Point &newHead, int snakeIndex);
+void clearTileGrid();
+
+// Callback function for pathfinding algorithm
+bool isPositionOccupiedCallback(const Point& pos, void* context) {
+  // Check boundaries
+  if (pos.x <= 0 || pos.x >= GRID_WIDTH - 1 || pos.y <= 0 || pos.y >= GRID_HEIGHT - 1) {
+    return true;
+  }
+  
+  // Use tile grid for O(1) lookup if available
+  if (tileGrid != nullptr && pos.x >= 0 && pos.x < GRID_WIDTH && pos.y >= 0 && pos.y < GRID_HEIGHT) {
+    TileContent content = tileGrid[pos.x][pos.y];
+    return content != TILE_EMPTY && content != TILE_FOOD;
+  }
+  
+  // Fallback to original method if tile grid is not available
+  // Check player snakes
+  for (const auto& snake : snakes) {
+    for (const auto& segment : snake.body) {
+      if (pos == segment) {
+        return true;
+      }
+    }
+  }
+  
+  // Check AI snakes
+  for (const auto& aiSnake : aiSnakes) {
+    for (const auto& segment : aiSnake.body) {
+      if (pos == segment) {
+        return true;
+      }
+    }
+  }
+  
+  // Check pacman
+  if (pacmanActive && pos == pacman) {
+    return true;
+  }
+  
+  return false;
+}
+
+// Tile grid management functions
+void initializeTileGrid() {
+  if (tileGrid != nullptr) {
+    // Clean up existing grid
+    for (int x = 0; x < GRID_WIDTH; x++) {
+      delete[] tileGrid[x];
+    }
+    delete[] tileGrid;
+  }
+  
+  // Allocate new grid
+  tileGrid = new TileContent*[GRID_WIDTH];
+  for (int x = 0; x < GRID_WIDTH; x++) {
+    tileGrid[x] = new TileContent[GRID_HEIGHT];
+  }
+  
+  clearTileGrid();
+}
+
+void clearTileGrid() {
+  if (tileGrid == nullptr) return;
+  
+  // Clear all tiles and set borders
+  for (int x = 0; x < GRID_WIDTH; x++) {
+    for (int y = 0; y < GRID_HEIGHT; y++) {
+      if (x == 0 || x == GRID_WIDTH - 1 || y == 0 || y == GRID_HEIGHT - 1) {
+        tileGrid[x][y] = TILE_BORDER;
+      } else {
+        tileGrid[x][y] = TILE_EMPTY;
+      }
+    }
+  }
+}
+
+void cleanupTileGrid() {
+  if (tileGrid == nullptr) return;
+  
+  for (int x = 0; x < GRID_WIDTH; x++) {
+    delete[] tileGrid[x];
+  }
+  delete[] tileGrid;
+  tileGrid = nullptr;
+}
+
+void setTileContent(int x, int y, TileContent content) {
+  if (tileGrid != nullptr && x >= 0 && x < GRID_WIDTH && y >= 0 && y < GRID_HEIGHT) {
+    tileGrid[x][y] = content;
+  }
+}
+
+// A* pathfinding helper functions moved to algorithm/pathfinding.cpp
+
+// A* pathfinding algorithm moved to algorithm/pathfinding.cpp
+
 // Helper function to check if a move is valid
 bool isValidMove(const Point &newHead) {
+  // Legacy function - only checks snake[0] for backward compatibility
+  return isValidMoveForSnake(newHead, 0);
+}
+
+bool isValidMoveForSnake(const Point &newHead, int snakeIndex) {
   // Check boundary collision - pause before entering the border area
   if (newHead.x == 0 || newHead.x == GRID_WIDTH - 1 || newHead.y == 0 ||
       newHead.y == GRID_HEIGHT - 1) {
     return false;
   }
 
-  // Check self collision
-  for (const auto &segment : snake) {
-    if (newHead == segment) {
-      return false;
+  // Check self collision for the specific snake
+  if (snakeIndex >= 0 && snakeIndex < snakes.size()) {
+    for (const auto &segment : snakes[snakeIndex].body) {
+      if (newHead == segment) {
+        return false;
+      }
+    }
+  }
+
+  // Check collision with other snakes
+  for (int i = 0; i < snakes.size(); i++) {
+    if (i != snakeIndex) { // Don't check against self
+      for (const auto &segment : snakes[i].body) {
+        if (newHead == segment) {
+          return false;
+        }
+      }
+    }
+  }
+
+  // Check collision with AI snakes
+  for (const auto &aiSnake : aiSnakes) {
+    for (const auto &segment : aiSnake.body) {
+      if (newHead == segment) {
+        return false;
+      }
     }
   }
 
   // Check pacman collision - if pacman is in the way, treat as collision
+  if (pacmanActive && newHead == pacman) {
+    return false;
+  }
+
+  return true;
+}
+
+// Helper function to check if an AI snake move is valid
+bool isValidMoveForAISnake(const Point &newHead, int aiSnakeIndex) {
+  // Check boundary collision
+  if (newHead.x == 0 || newHead.x == GRID_WIDTH - 1 || newHead.y == 0 ||
+      newHead.y == GRID_HEIGHT - 1) {
+    return false;
+  }
+
+  // Check self collision for the specific AI snake
+  if (aiSnakeIndex >= 0 && aiSnakeIndex < aiSnakes.size()) {
+    for (const auto &segment : aiSnakes[aiSnakeIndex].body) {
+      if (newHead == segment) {
+        return false;
+      }
+    }
+  }
+
+  // Check collision with player snakes
+  for (const auto &snake : snakes) {
+    for (const auto &segment : snake.body) {
+      if (newHead == segment) {
+        return false;
+      }
+    }
+  }
+
+  // Check collision with other AI snakes
+  for (int i = 0; i < aiSnakes.size(); i++) {
+    if (i != aiSnakeIndex) { // Don't check against self
+      for (const auto &segment : aiSnakes[i].body) {
+        if (newHead == segment) {
+          return false;
+        }
+      }
+    }
+  }
+
+  // Check pacman collision
   if (pacmanActive && newHead == pacman) {
     return false;
   }
@@ -235,7 +384,7 @@ bool isValidPacmanMove(const Point &newPos) {
   }
 
   // Check snake collision - pacman can't move into snake
-  for (const auto &segment : snake) {
+  for (const auto &segment : snakes[0].body) {
     if (newPos == segment) {
       return false;
     }
@@ -300,22 +449,106 @@ Point calculatePacmanDirection() {
   return Point(0, 0);
 }
 
-void initializeGame() {
-  snake.clear();
-  snake.push_back(Point(GRID_WIDTH / 2, GRID_HEIGHT / 2));
-  snake.push_back(Point(GRID_WIDTH / 2 - 1, GRID_HEIGHT / 2));
-  snake.push_back(Point(GRID_WIDTH / 2 - 2, GRID_HEIGHT / 2));
+// Naive pathfinding (original algorithm) - now uses pathfinding library
+Point calculateNaiveDirection(int aiSnakeIndex) {
+  if (aiSnakeIndex >= aiSnakes.size())
+    return Point(0, 0);
 
-  direction = Point(1, 0);
+  const Snake& aiSnake = aiSnakes[aiSnakeIndex];
+  Point head = aiSnake.body[0];
+
+  // Use pathfinding library for naive direction calculation
+  return calculateNaivePathDirection(head, food, GRID_WIDTH, GRID_HEIGHT, 
+                                   isPositionOccupiedCallback, nullptr, 
+                                   aiSnake.direction);
+}
+
+// A* pathfinding direction calculation - now uses pathfinding library
+Point calculateAStarDirection(int aiSnakeIndex) {
+  if (aiSnakeIndex >= aiSnakes.size())
+    return Point(0, 0);
+
+  const Snake& aiSnake = aiSnakes[aiSnakeIndex];
+  Point head = aiSnake.body[0];
+
+  // Use pathfinding library for A* direction calculation
+  Point direction = calculateAStarPathDirection(head, food, GRID_WIDTH, GRID_HEIGHT, 
+                                              isPositionOccupiedCallback, nullptr);
+  
+  // Validate the move using game-specific validation
+  Point newHead = Point(head.x + direction.x, head.y + direction.y);
+  if (isValidMoveForAISnake(newHead, aiSnakeIndex)) {
+    return direction;
+  }
+  
+  // Fallback to naive algorithm if A* fails
+  return calculateNaiveDirection(aiSnakeIndex);
+}
+
+// Main AI direction calculation function
+Point calculateAISnakeDirection(int aiSnakeIndex) {
+  if (aiSnakeIndex >= aiSnakes.size())
+    return Point(0, 0);
+
+  const Snake& aiSnake = aiSnakes[aiSnakeIndex];
+  
+  switch (aiSnake.navType) {
+    case NAV_ASTAR:
+      return calculateAStarDirection(aiSnakeIndex);
+    case NAV_NAIVE:
+    default:
+      return calculateNaiveDirection(aiSnakeIndex);
+  }
+}
+
+void initializeGame() {
+  snakes.clear();
+  aiSnakes.clear();
+  
+  // Initialize snakes: max(1, controller_count) but limit to 4 snakes maximum
+  int totalSnakes = std::min(4, std::max(1, numControllers));
+  
+  // Colors for different snakes
+  RGBColor colors[] = {
+    RGBColor(0.0f, 1.0f, 0.0f), // Green - keyboard + controller 0 (snake[0])
+    RGBColor(1.0f, 0.0f, 0.0f), // Red - controller 1 (snake[1])
+    RGBColor(0.0f, 0.0f, 1.0f), // Blue - controller 2 (snake[2])
+    RGBColor(1.0f, 1.0f, 0.0f), // Yellow - controller 3 (snake[3])
+    RGBColor(1.0f, 0.0f, 1.0f), // Magenta - controller 4 (snake[4])
+    RGBColor(0.0f, 1.0f, 1.0f), // Cyan - controller 5 (snake[5])
+    RGBColor(1.0f, 0.5f, 0.0f), // Orange - controller 6 (snake[6])
+    RGBColor(0.5f, 0.0f, 1.0f)  // Purple - controller 7 (snake[7])
+  };
+  
+  // AI snake colors (different from player snake colors)
+  RGBColor aiColors[] = {
+    RGBColor(1.0f, 0.5f, 0.8f), // Pink - AI snake 0
+    RGBColor(0.8f, 0.3f, 0.8f), // Purple - AI snake 1
+    RGBColor(0.6f, 0.8f, 0.2f), // Lime - AI snake 2
+    RGBColor(0.9f, 0.6f, 0.1f)  // Orange - AI snake 3
+  };
+  
+  // Create snakes based on controller count (minimum 1)
+  int startX = GRID_WIDTH / 2;
+  int startY = GRID_HEIGHT / 2;
+  
+  for (int i = 0; i < totalSnakes && i < 4; i++) {
+    int offsetX = i * 3; // Space them out
+    int offsetY = (i % 2 == 0) ? 0 : ((i % 4 < 2) ? 2 : -2); // Alternate positions
+    
+    SDL_GameController* controller = (i < gameControllers.size()) ? gameControllers[i] : nullptr;
+    
+    snakes.push_back(Snake(startX + offsetX, startY + offsetY, Point(1, 0), 
+                          controller, i, colors[i].r, colors[i].g, colors[i].b));
+  }
+
   gameOver = false;
-  movementPaused = false;
   gamePaused = false;
   exitConfirmation = false;
   resetConfirmation = false;
-  score = 0;
 
-  // Initialize pacman for level 1+
-  pacmanActive = (level >= 1);
+  // Initialize pacman for level 1 only (not level 2+)
+  pacmanActive = (level == 1);
   if (pacmanActive) {
     // Spawn pacman at random unoccupied location
     std::random_device rd;
@@ -325,12 +558,52 @@ void initializeGame() {
 
     do {
       pacman = Point(disX(gen), disY(gen));
-    } while (std::find(snake.begin(), snake.end(), pacman) != snake.end());
+    } while (std::find(snakes[0].body.begin(), snakes[0].body.end(), pacman) != snakes[0].body.end());
 
     pacmanDirection = Point(0, 0); // Start stationary
     lastPacmanMoveTime = 0.0f;
     std::cout << "Pacman spawned at (" << pacman.x << "," << pacman.y
               << ") for Level " << level << std::endl;
+  }
+
+  // Initialize AI snakes for level 2+
+  if (level >= 2) {
+    // Spawn one AI snake for now (can be extended for more AI snakes)
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> disX(2, GRID_WIDTH - 3);
+    std::uniform_int_distribution<> disY(2, GRID_HEIGHT - 3);
+
+    Point aiStartPos;
+    bool validPosition = false;
+    int attempts = 0;
+    
+    do {
+      aiStartPos = Point(disX(gen), disY(gen));
+      validPosition = true;
+      attempts++;
+      
+      // Check if position is far enough from player snakes
+      for (const auto& snake : snakes) {
+        for (const auto& segment : snake.body) {
+          int distance = abs(aiStartPos.x - segment.x) + abs(aiStartPos.y - segment.y);
+          if (distance < 5) { // Minimum distance of 5 cells
+            validPosition = false;
+            break;
+          }
+        }
+        if (!validPosition) break;
+      }
+    } while (!validPosition && attempts < 50);
+
+    if (validPosition) {
+      // Create AI snake with pink color, moving left initially
+      aiSnakes.push_back(Snake(aiStartPos.x, aiStartPos.y, Point(-1, 0), 
+                              nullptr, -1, aiColors[0].r, aiColors[0].g, aiColors[0].b, NAV_ASTAR));
+      lastAISnakeMoveTime = 0.0f;
+      std::cout << "NPC Snake spawned at (" << aiStartPos.x << "," << aiStartPos.y
+                << ") for Level " << level << " (A* pathfinding)" << std::endl;
+    }
   }
 
   // Generate food (only in playable area, excluding borders)
@@ -341,10 +614,35 @@ void initializeGame() {
 
   do {
     food = Point(disX(gen), disY(gen));
-  } while (std::find(snake.begin(), snake.end(), food) != snake.end() ||
-           (pacmanActive && food == pacman));
+    bool foodValid = true;
+    
+    // Check against player snakes
+    for (const auto& snake : snakes) {
+      if (std::find(snake.body.begin(), snake.body.end(), food) != snake.body.end()) {
+        foodValid = false;
+        break;
+      }
+    }
+    
+    // Check against AI snakes
+    if (foodValid) {
+      for (const auto& aiSnake : aiSnakes) {
+        if (std::find(aiSnake.body.begin(), aiSnake.body.end(), food) != aiSnake.body.end()) {
+          foodValid = false;
+          break;
+        }
+      }
+    }
+    
+    // Check against pacman
+    if (foodValid && pacmanActive && food == pacman) {
+      foodValid = false;
+    }
+    
+    if (foodValid) break;
+  } while (true);
 
-  // Initialize food physics for Level 2+ (GRAVITY mode)
+  // Initialize food physics for Level 2+ (MULTI SNAKE mode)
   if (level >= 2) {
     foodPosX = (float)food.x;
     foodPosY = (float)food.y;
@@ -352,7 +650,7 @@ void initializeGame() {
     foodVelocityY = 0.0f;
     lastGyroUpdateTime = 0.0f;
     std::cout << "Food physics initialized for Level " << level
-              << " (GRAVITY mode)" << std::endl;
+              << " (MULTI SNAKE mode)" << std::endl;
   }
 }
 
@@ -367,6 +665,10 @@ void drawSquare(int x, int y, float r, float g, float b) {
   glUniform3f(u_color, r, g, b);
   glUniform1i(u_shape_type, 0);
   glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+}
+
+void drawSquare(int x, int y, const RGBColor& color) {
+  drawSquare(x, y, color.r, color.g, color.b);
 }
 
 // Draw a small square for text rendering (much smaller than game tiles)
@@ -602,7 +904,7 @@ void drawText(const char *text, float startX, float startY, float charSize,
 
 // Draw round eyes on the snake head that look towards the food
 void drawSnakeEyes(int headX, int headY, int foodX, int foodY, float snakeR,
-                   float snakeG, float snakeB) {
+                   float snakeG, float snakeB, Point snakeDirection) {
   // Calculate cell dimensions in NDC space
   float cellWidth = 2.0f / GRID_WIDTH;
   float cellHeight = 2.0f / GRID_HEIGHT;
@@ -612,8 +914,8 @@ void drawSnakeEyes(int headX, int headY, int foodX, int foodY, float snakeR,
   float headNdcY = (headY * cellHeight) - 1.0f + (cellHeight * 0.5f);
 
   // Use the snake's movement direction for eye positioning (front of head)
-  float moveDirX = direction.x;
-  float moveDirY = direction.y;
+  float moveDirX = snakeDirection.x;
+  float moveDirY = snakeDirection.y;
 
   // Calculate direction vector from head to food (for pupil tracking)
   float foodDirX = foodX - headX;
@@ -742,20 +1044,22 @@ void drawConfirmationDialogue(const char *message, float bgR, float bgG,
 
 // Rumble/vibration system functions
 bool initializeRumble() {
-  if (!gameController) {
-    std::cout << "No game controller available for rumble" << std::endl;
+  if (gameControllers.empty()) {
+    std::cout << "No game controllers available for rumble" << std::endl;
     return false;
   }
 
-  // Check if the controller supports haptic feedback
-  if (SDL_GameControllerHasRumble(gameController)) {
-    rumbleSupported = true;
-    std::cout << "🎮 Rumble support detected and enabled!" << std::endl;
-    return true;
-  } else {
-    std::cout << "Controller does not support rumble" << std::endl;
-    return false;
+  // Check if any controller supports haptic feedback
+  for (auto controller : gameControllers) {
+    if (SDL_GameControllerHasRumble(controller)) {
+      rumbleSupported = true;
+      std::cout << "🎮 Rumble support detected and enabled!" << std::endl;
+      return true;
+    }
   }
+  
+  std::cout << "No controllers support rumble" << std::endl;
+  return false;
 }
 
 // Gyroscope system functions
@@ -872,7 +1176,7 @@ bool initializeGyroscope() {
         std::cout << "  ✅ SUCCESS: Gyroscope opened!" << std::endl;
         std::cout << "🌀 Gyroscope initialized: "
                   << (sensorName ? sensorName : "Unknown Gyro") << std::endl;
-        std::cout << "Level 2 GRAVITY mode available!" << std::endl;
+        std::cout << "Level 2 MULTI SNAKE mode available!" << std::endl;
         std::cout << "=============================" << std::endl;
         return true;
       } else {
@@ -897,7 +1201,7 @@ bool initializeGyroscope() {
       gyroSensor = SDL_SensorOpen(i);
       if (gyroSensor) {
         gyroSupported = true;
-        std::cout << "✅ Using accelerometer for Level 2 GRAVITY mode"
+        std::cout << "✅ Using accelerometer for Level 2 MULTI SNAKE mode"
                   << std::endl;
         std::cout
             << "Note: This uses tilt instead of rotation for food movement"
@@ -909,7 +1213,7 @@ bool initializeGyroscope() {
   }
 
   std::cout << "❌ No gyroscope or accelerometer sensors found" << std::endl;
-  std::cout << "Level 2 GRAVITY mode disabled" << std::endl;
+        std::cout << "Level 2 MULTI SNAKE mode disabled" << std::endl;
   std::cout << "=============================" << std::endl;
   return false;
 }
@@ -1001,7 +1305,7 @@ void updateFoodPhysics(float deltaTime) {
 
     // Ensure food doesn't land on snake or pacman
     bool validPosition = true;
-    for (const auto &segment : snake) {
+    for (const auto &segment : snakes[0].body) {
       if (newFoodX == segment.x && newFoodY == segment.y) {
         validPosition = false;
         break;
@@ -1042,17 +1346,18 @@ void updateFoodPhysics(float deltaTime) {
 }
 
 void triggerRumble() {
-  if (!rumbleSupported || !gameController)
+  if (!rumbleSupported || gameControllers.empty())
     return;
 
-  // Trigger rumble with SDL2's simple interface
+  // Trigger rumble with SDL2's simple interface on all controllers
   // Parameters: controller, low_freq_rumble, high_freq_rumble, duration_ms
-  if (SDL_GameControllerRumble(gameController, 0xFFFF, 0xC000,
-                               (Uint32)(RUMBLE_DURATION * 1000)) == 0) {
-    rumbleEndTime = (SDL_GetTicks() / 1000.0f) + RUMBLE_DURATION;
-    std::cout << "🎮 RUMBLE! Collision detected!" << std::endl;
-  } else {
-    std::cout << "Failed to trigger rumble: " << SDL_GetError() << std::endl;
+  for (auto controller : gameControllers) {
+    if (SDL_GameControllerRumble(controller, 0xFFFF, 0xC000,
+                                 (Uint32)(RUMBLE_DURATION * 1000)) == 0) {
+      rumbleEndTime = (SDL_GetTicks() / 1000.0f) + RUMBLE_DURATION;
+      std::cout << "🎮 RUMBLE! Collision detected!" << std::endl;
+      break; // Only need to log once
+    }
   }
 }
 
@@ -1068,9 +1373,11 @@ void updateRumble() {
 }
 
 void cleanupRumble() {
-  if (rumbleSupported && gameController) {
-    // Stop any ongoing rumble
-    SDL_GameControllerRumble(gameController, 0, 0, 0);
+  if (rumbleSupported && !gameControllers.empty()) {
+    // Stop any ongoing rumble on all controllers
+    for (auto controller : gameControllers) {
+      SDL_GameControllerRumble(controller, 0, 0, 0);
+    }
     rumbleSupported = false;
   }
 }
@@ -1080,7 +1387,11 @@ void render() {
   glUseProgram(shaderProgram);
   glBindVertexArray(VAO);
 
+  // Clear tile grid and repopulate it during rendering
+  clearTileGrid();
+
   // Draw food (apple texture)
+  setTileContent(food.x, food.y, TILE_FOOD);
   if (appleTexture != 0) {
     drawTexturedSquare(food.x, food.y, appleTexture);
   } else {
@@ -1090,6 +1401,7 @@ void render() {
 
   // Draw pacman (if active) - yellow circle with black circle mouth
   if (pacmanActive) {
+    setTileContent(pacman.x, pacman.y, TILE_PACMAN);
     // Calculate cell dimensions and position
     float cellWidth = 2.0f / GRID_WIDTH;
     float cellHeight = 2.0f / GRID_HEIGHT;
@@ -1153,22 +1465,17 @@ void render() {
   }
 
   // Display level description below
+  const float kLevelDescColor[3] = {1.0f, 0.8f, 0.0f}; // Orange color for level descriptions
+  
   if (level == 0) {
     drawText("JUST SNAKE", levelTextX, levelTextY - textSize * 1.2f,
-             textSize * 0.7f, 1.0f, 0.8f, 0.0f); // Orange text
+             textSize * 0.7f, kLevelDescColor[0], kLevelDescColor[1], kLevelDescColor[2]);
   } else if (level == 1) {
     drawText("PACMAN", levelTextX, levelTextY - textSize * 1.2f,
-             textSize * 0.7f, 1.0f, 0.8f, 0.0f); // Orange text
+             textSize * 0.7f, kLevelDescColor[0], kLevelDescColor[1], kLevelDescColor[2]);
   } else if (level == 2) {
-    if (gyroSupported) {
-      drawText("GRAVITY", levelTextX, levelTextY - textSize * 1.2f,
-               textSize * 0.7f, 0.0f, 1.0f,
-               1.0f); // Cyan text for active gravity
-    } else {
-      drawText("GRAVITY", levelTextX, levelTextY - textSize * 1.2f,
-               textSize * 0.7f, 0.5f, 0.5f,
-               0.5f); // Gray text for disabled gravity
-    }
+    drawText("NPC SNAKE", levelTextX, levelTextY - textSize * 1.2f,
+             textSize * 0.7f, kLevelDescColor[0], kLevelDescColor[1], kLevelDescColor[2]);
   }
 
   // Show IPC mode indicator next to level info
@@ -1348,41 +1655,95 @@ void render() {
     }
   }
 
-  // Draw snake with eyes on head
-  for (size_t i = 0; i < snake.size(); i++) {
-    float intensity = i == 0 ? 1.0f : 0.6f;
-    float r, g, b; // Store colors for eye rendering
+  // Draw all player snakes
+  for (size_t snakeIdx = 0; snakeIdx < snakes.size(); snakeIdx++) {
+    const Snake& currentSnake = snakes[snakeIdx];
+    if (!currentSnake.isAlive) continue;
+    
+    for (size_t i = 0; i < currentSnake.body.size(); i++) {
+      float intensity = i == 0 ? 1.0f : 0.6f;
+      float r, g, b; // Store colors for eye rendering
 
-    if (exitConfirmation) {
-      r = intensity;
-      g = 0.0f;
-      b = 0.0f;
-      drawSquare(snake[i].x, snake[i].y, r, g, b);
-    } else if (resetConfirmation) {
-      r = intensity;
-      g = intensity * 0.5f;
-      b = 0.0f;
-      drawSquare(snake[i].x, snake[i].y, r, g, b);
-    } else if (gamePaused) {
-      r = intensity;
-      g = intensity;
-      b = 0.0f;
-      drawSquare(snake[i].x, snake[i].y, r, g, b);
-    } else if (movementPaused) {
-      r = intensity;
-      g = 0.0f;
-      b = intensity;
-      drawSquare(snake[i].x, snake[i].y, r, g, b);
-    } else {
-      r = 0.0f;
-      g = intensity;
-      b = 0.0f;
-      drawSquare(snake[i].x, snake[i].y, r, g, b);
+      if (exitConfirmation) {
+        r = intensity;
+        g = 0.0f;
+        b = 0.0f;
+      } else if (resetConfirmation) {
+        r = intensity;
+        g = intensity * 0.5f;
+        b = 0.0f;
+      } else if (gamePaused) {
+        r = intensity;
+        g = intensity;
+        b = 0.0f;
+      } else if (currentSnake.movementPaused) {
+        r = intensity;
+        g = 0.0f;
+        b = intensity;
+      } else {
+        // Use snake's individual color
+        RGBColor snakeColor = currentSnake.color * intensity;
+        r = snakeColor.r;
+        g = snakeColor.g;
+        b = snakeColor.b;
+      }
+      
+      // Update tile grid
+      TileContent tileType = (i == 0) ? TILE_SNAKE_HEAD : TILE_SNAKE_BODY;
+      setTileContent(currentSnake.body[i].x, currentSnake.body[i].y, tileType);
+      
+      drawSquare(currentSnake.body[i].x, currentSnake.body[i].y, r, g, b);
+
+      // Draw eyes on the snake's head (first segment)
+      if (i == 0 && !gameOver) {
+        drawSnakeEyes(currentSnake.body[i].x, currentSnake.body[i].y, food.x, food.y, r, g, b, currentSnake.direction);
+      }
     }
+  }
 
-    // Draw eyes on the snake's head (first segment)
-    if (i == 0 && !gameOver) {
-      drawSnakeEyes(snake[i].x, snake[i].y, food.x, food.y, r, g, b);
+  // Draw all AI snakes
+  for (size_t aiSnakeIdx = 0; aiSnakeIdx < aiSnakes.size(); aiSnakeIdx++) {
+    const Snake& aiSnake = aiSnakes[aiSnakeIdx];
+    if (!aiSnake.isAlive) continue;
+    
+    for (size_t i = 0; i < aiSnake.body.size(); i++) {
+      float intensity = i == 0 ? 1.0f : 0.6f;
+      float r, g, b; // Store colors for eye rendering
+
+      if (exitConfirmation) {
+        r = intensity;
+        g = 0.0f;
+        b = 0.0f;
+      } else if (resetConfirmation) {
+        r = intensity;
+        g = intensity * 0.5f;
+        b = 0.0f;
+      } else if (gamePaused) {
+        r = intensity;
+        g = intensity;
+        b = 0.0f;
+      } else if (aiSnake.movementPaused) {
+        r = intensity;
+        g = 0.0f;
+        b = intensity;
+      } else {
+        // Use AI snake's individual color
+        RGBColor aiSnakeColor = aiSnake.color * intensity;
+        r = aiSnakeColor.r;
+        g = aiSnakeColor.g;
+        b = aiSnakeColor.b;
+      }
+      
+      // Update tile grid
+      TileContent tileType = (i == 0) ? TILE_AI_SNAKE_HEAD : TILE_AI_SNAKE_BODY;
+      setTileContent(aiSnake.body[i].x, aiSnake.body[i].y, tileType);
+      
+      drawSquare(aiSnake.body[i].x, aiSnake.body[i].y, r, g, b);
+
+      // Draw eyes on the AI snake's head (first segment)
+      if (i == 0 && !gameOver) {
+        drawSnakeEyes(aiSnake.body[i].x, aiSnake.body[i].y, food.x, food.y, r, g, b, aiSnake.direction);
+      }
     }
   }
 
@@ -1400,7 +1761,7 @@ void render() {
     borderR = 1.0f;
     borderG = 0.5f;
     borderB = 0.0f;
-  } else if (movementPaused) {
+  } else if (!snakes.empty() && snakes[0].movementPaused) {
     bool showRed = ((int)(flashTimer / FLASH_INTERVAL) % 2) == 0;
     if (showRed) {
       borderR = 1.0f;
@@ -1442,101 +1803,110 @@ void updateGame() {
   if (gameOver)
     return;
 
-  Point newHead = Point(snake[0].x + direction.x, snake[0].y + direction.y);
-  bool snakeCanMove = isValidMove(newHead);
-  bool snakeGotFood = false;
+  // Update all snakes
+  bool anySnakeGotFood = false;
+  for (size_t snakeIdx = 0; snakeIdx < snakes.size(); snakeIdx++) {
+    Snake& currentSnake = snakes[snakeIdx];
+    if (!currentSnake.isAlive) continue;
 
-  // Check if the snake move is valid
-  if (!snakeCanMove) {
-    // Invalid move - pause movement until direction changes
-    if (!movementPaused) {
-      // Only trigger rumble on the first collision, not repeatedly while paused
-      triggerRumble();
-      std::cout << "COLLISION! Snake hit boundary, itself, or Pacman!"
-                << std::endl;
+    Point newHead = Point(currentSnake.body[0].x + currentSnake.direction.x, 
+                         currentSnake.body[0].y + currentSnake.direction.y);
+    bool snakeCanMove = isValidMove(newHead);
+    bool snakeGotFood = false;
+
+    // Check if the snake move is valid
+    if (!snakeCanMove) {
+      // Invalid move - pause movement until direction changes
+      if (!currentSnake.movementPaused) {
+        // Only trigger rumble on the first collision, not repeatedly while paused
+        triggerRumble();
+        std::cout << "COLLISION! Snake " << snakeIdx << " hit boundary, itself, or Pacman!" << std::endl;
+      }
+      currentSnake.movementPaused = true;
+
+      // Even though snake is blocked, still allow pacman to compete for food
+      snakeGotFood = false; // Snake can't get food if blocked
+    } else {
+      // Valid move - resume movement if it was paused
+      if (currentSnake.movementPaused) {
+        currentSnake.movementPaused = false;
+        std::cout << "Movement resumed for Snake " << snakeIdx << "!" << std::endl;
+      }
+
+      // Move the snake
+      currentSnake.body.insert(currentSnake.body.begin(), newHead);
+
+      // Check if snake got the food
+      snakeGotFood = (newHead == food);
+      if (snakeGotFood) {
+        anySnakeGotFood = true;
+        currentSnake.score++;
+        std::cout << "Snake " << snakeIdx << " scored! Score: " << currentSnake.score << std::endl;
+      }
     }
-    movementPaused = true;
 
-    // Even though snake is blocked, still allow pacman to compete for food
-    snakeGotFood = false; // Snake can't get food if blocked
-  } else {
-    // Valid move - resume movement if it was paused
-    if (movementPaused) {
-      movementPaused = false;
-      std::cout << "Movement resumed!" << std::endl;
+    // If snake didn't get food, remove tail (unless it was blocked)
+    if (!snakeGotFood && snakeCanMove) {
+      currentSnake.body.pop_back();
     }
-
-    // Move the snake
-    snake.insert(snake.begin(), newHead);
-
-    // Check if snake got the food
-    snakeGotFood = (newHead == food);
   }
 
-  // Check if pacman got the food (regardless of snake's state)
+  // Check if pacman got the food
   bool pacmanGotFood = false;
   if (pacmanActive && pacman == food) {
     pacmanGotFood = true;
   }
 
-  // Handle food competition outcomes
-  if (snakeGotFood && !pacmanGotFood) {
-    // Snake wins the food
-    score++;
-    std::cout << "Snake scored! Score: " << score << std::endl;
-
-    // Generate new food (avoiding snake and pacman)
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> disX(1, GRID_WIDTH - 2);
-    std::uniform_int_distribution<> disY(1, GRID_HEIGHT - 2);
-
-    do {
-      food = Point(disX(gen), disY(gen));
-    } while (std::find(snake.begin(), snake.end(), food) != snake.end() ||
-             (pacmanActive && food == pacman));
-  } else if (pacmanGotFood && !snakeGotFood) {
-    // Pacman wins the food - snake doesn't grow
-    std::cout << "Pacman got the food! Generating new food..." << std::endl;
-
-    // If snake moved but didn't get food, remove tail. If snake was blocked,
-    // don't change snake.
-    if (snakeCanMove) {
-      snake.pop_back(); // Remove tail since no food was eaten by snake
+  // Check if any AI snake got the food
+  bool anyAISnakeGotFood = false;
+  for (size_t aiIdx = 0; aiIdx < aiSnakes.size(); aiIdx++) {
+    Snake& aiSnake = aiSnakes[aiIdx];
+    if (!aiSnake.isAlive) continue;
+    
+    if (!aiSnake.body.empty() && aiSnake.body[0] == food) {
+      anyAISnakeGotFood = true;
+      aiSnake.score++;
+      std::cout << "NPC Snake " << aiIdx << " scored! Score: " << aiSnake.score << std::endl;
+      break; // Only one AI snake can get food at a time
     }
+  }
 
-    // Generate new food (avoiding snake and pacman)
+  // Generate new food if any snake got it, pacman got it, or AI snake got it
+  if (anySnakeGotFood || pacmanGotFood || anyAISnakeGotFood) {
+    // Generate new food (avoiding all snakes and pacman)
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> disX(1, GRID_WIDTH - 2);
     std::uniform_int_distribution<> disY(1, GRID_HEIGHT - 2);
 
+    bool foodPlacementValid = false;
     do {
       food = Point(disX(gen), disY(gen));
-    } while (std::find(snake.begin(), snake.end(), food) != snake.end() ||
-             (pacmanActive && food == pacman));
-  } else if (snakeGotFood && pacmanGotFood) {
-    // Both reached food at same time - snake wins
-    score++;
-    std::cout
-        << "Snake and Pacman reached food simultaneously - Snake wins! Score: "
-        << score << std::endl;
-
-    // Generate new food
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> disX(1, GRID_WIDTH - 2);
-    std::uniform_int_distribution<> disY(1, GRID_HEIGHT - 2);
-
-    do {
-      food = Point(disX(gen), disY(gen));
-    } while (std::find(snake.begin(), snake.end(), food) != snake.end() ||
-             (pacmanActive && food == pacman));
-  } else {
-    // No food was eaten
-    if (snakeCanMove) {
-      snake.pop_back(); // Remove tail only if snake actually moved
-    }
+      foodPlacementValid = true;
+      
+      // Check against all player snake bodies
+      for (const Snake& snake : snakes) {
+        if (std::find(snake.body.begin(), snake.body.end(), food) != snake.body.end()) {
+          foodPlacementValid = false;
+          break;
+        }
+      }
+      
+      // Check against all AI snake bodies
+      if (foodPlacementValid) {
+        for (const Snake& aiSnake : aiSnakes) {
+          if (std::find(aiSnake.body.begin(), aiSnake.body.end(), food) != aiSnake.body.end()) {
+            foodPlacementValid = false;
+            break;
+          }
+        }
+      }
+      
+      // Check against pacman
+      if (foodPlacementValid && pacmanActive && food == pacman) {
+        foodPlacementValid = false;
+      }
+    } while (!foodPlacementValid);
   }
 }
 
@@ -1558,6 +1928,53 @@ void updatePacman() {
   }
 }
 
+void updateAISnakes() {
+  if (aiSnakes.empty())
+    return;
+
+  // Update all AI snakes
+  for (size_t aiIdx = 0; aiIdx < aiSnakes.size(); aiIdx++) {
+    Snake& aiSnake = aiSnakes[aiIdx];
+    if (!aiSnake.isAlive) continue;
+
+    // Calculate new direction for AI snake
+    Point newDirection = calculateAISnakeDirection(aiIdx);
+    aiSnake.direction = newDirection;
+
+    // Calculate new head position
+    Point newHead = Point(aiSnake.body[0].x + aiSnake.direction.x, 
+                         aiSnake.body[0].y + aiSnake.direction.y);
+    bool aiSnakeCanMove = isValidMoveForAISnake(newHead, aiIdx);
+    bool aiSnakeGotFood = false;
+
+    // Check if the AI snake move is valid
+    if (!aiSnakeCanMove) {
+      // Invalid move - pause movement until direction changes
+      if (!aiSnake.movementPaused) {
+        std::cout << "COLLISION! NPC Snake " << aiIdx << " hit boundary, itself, or other entities!" << std::endl;
+      }
+      aiSnake.movementPaused = true;
+    } else {
+      // Valid move - resume movement if it was paused
+      if (aiSnake.movementPaused) {
+        aiSnake.movementPaused = false;
+        std::cout << "Movement resumed for NPC Snake " << aiIdx << "!" << std::endl;
+      }
+
+      // Move the AI snake
+      aiSnake.body.insert(aiSnake.body.begin(), newHead);
+
+      // Check if AI snake got the food
+      aiSnakeGotFood = (newHead == food);
+    }
+
+    // If AI snake didn't get food, remove tail (unless it was blocked)
+    if (!aiSnakeGotFood && aiSnakeCanMove) {
+      aiSnake.body.pop_back();
+    }
+  }
+}
+
 void changeLevel(int newLevel) {
   if (newLevel < 0 || newLevel > 2)
     return; // Levels 0, 1, and 2 supported
@@ -1572,12 +1989,14 @@ void changeLevel(int newLevel) {
 
   // Handle pacman spawning/despawning
   if (level == 0) {
-    // Level 0: Despawn pacman
+    // Level 0: Despawn pacman and AI snakes
     pacmanActive = false;
-    std::cout << "Pacman despawned for Level 0 (Classic Snake)" << std::endl;
-  } else if (level >= 1) {
-    // Level 1+: Spawn pacman
+    aiSnakes.clear();
+    std::cout << "Pacman and NPC snakes despawned for Level 0 (Classic Snake)" << std::endl;
+  } else if (level == 1) {
+    // Level 1: Spawn pacman, despawn NPC snakes
     pacmanActive = true;
+    aiSnakes.clear();
 
     // Spawn pacman at random unoccupied location
     std::random_device rd;
@@ -1587,16 +2006,69 @@ void changeLevel(int newLevel) {
 
     do {
       pacman = Point(disX(gen), disY(gen));
-    } while (std::find(snake.begin(), snake.end(), pacman) != snake.end() ||
+    } while (std::find(snakes[0].body.begin(), snakes[0].body.end(), pacman) != snakes[0].body.end() ||
              pacman == food);
 
     pacmanDirection = Point(0, 0); // Start stationary
     lastPacmanMoveTime = 0.0f;
     std::cout << "Pacman spawned at (" << pacman.x << "," << pacman.y
               << ") for Level " << level << std::endl;
+  } else if (level >= 2) {
+    // Level 2+: Despawn pacman, spawn NPC snakes
+    pacmanActive = false;
+    aiSnakes.clear();
+    
+    // Spawn AI snake
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> disX(2, GRID_WIDTH - 3);
+    std::uniform_int_distribution<> disY(2, GRID_HEIGHT - 3);
+
+    Point aiStartPos;
+    bool validPosition = false;
+    int attempts = 0;
+    
+    do {
+      aiStartPos = Point(disX(gen), disY(gen));
+      validPosition = true;
+      attempts++;
+      
+      // Check if position is far enough from player snakes
+      for (const auto& snake : snakes) {
+        for (const auto& segment : snake.body) {
+          int distance = abs(aiStartPos.x - segment.x) + abs(aiStartPos.y - segment.y);
+          if (distance < 5) { // Minimum distance of 5 cells
+            validPosition = false;
+            break;
+          }
+        }
+        if (!validPosition) break;
+      }
+      
+      // Check if not on food
+      if (validPosition && aiStartPos == food) {
+        validPosition = false;
+      }
+    } while (!validPosition && attempts < 50);
+
+    if (validPosition) {
+      // Create NPC snake with pink color, moving left initially, using A* pathfinding
+      // Use colors from aiColors array for consistency
+      RGBColor aiColors[] = {
+        RGBColor(1.0f, 0.5f, 0.8f), // Pink - AI snake 0
+        RGBColor(0.8f, 0.3f, 0.8f), // Purple - AI snake 1
+        RGBColor(0.6f, 0.8f, 0.2f), // Lime - AI snake 2
+        RGBColor(0.9f, 0.6f, 0.1f)  // Orange - AI snake 3
+      };
+      aiSnakes.push_back(Snake(aiStartPos.x, aiStartPos.y, Point(-1, 0), 
+                              nullptr, -1, aiColors[0].r, aiColors[0].g, aiColors[0].b, NAV_ASTAR));
+      lastAISnakeMoveTime = 0.0f;
+      std::cout << "NPC Snake spawned at (" << aiStartPos.x << "," << aiStartPos.y
+                << ") for Level " << level << " (A* pathfinding)" << std::endl;
+    }
   }
 
-  // Handle food physics for Level 2+ (GRAVITY mode)
+      // Handle food physics for Level 2+ (MULTI SNAKE mode)
   if (level >= 2 && gyroSupported) {
     // Initialize food physics
     foodPosX = (float)food.x;
@@ -1604,14 +2076,14 @@ void changeLevel(int newLevel) {
     foodVelocityX = 0.0f;
     foodVelocityY = 0.0f;
     lastGyroUpdateTime = 0.0f;
-    std::cout << "🌀 GRAVITY mode activated! Tilt device to move the food!"
-              << std::endl;
+            std::cout << "🌀 NPC SNAKE mode activated! Tilt device to move the food!"
+                  << std::endl;
   } else if (level >= 2 && !gyroSupported) {
-    std::cout << "⚠️  Level 2 GRAVITY mode requires gyroscope - not available"
-              << std::endl;
-    std::cout << "Level 2 will work like Level 1 (Pacman mode)" << std::endl;
+          std::cout << "🐍 Level 2 NPC SNAKE mode - gyroscope disabled for testing"
+                << std::endl;
+    std::cout << "Level 2 features NPC Snake that competes for food" << std::endl;
   } else if (level < 2) {
-    // Reset food physics when leaving GRAVITY mode
+    // Reset food physics when leaving MULTI SNAKE mode
     foodVelocityX = 0.0f;
     foodVelocityY = 0.0f;
     std::cout << "Food physics disabled for Level " << level << std::endl;
@@ -1626,41 +2098,41 @@ void handleKeyboardEvent(SDL_KeyboardEvent *keyEvent) {
     switch (keyEvent->keysym.sym) {
     // Movement keys - Arrow keys
     case SDLK_UP:
-      if (direction.y == 0) {
+      if (!snakes.empty() && snakes[0].direction.y == 0) {
         Point newDir = Point(0, 1);
-        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-        if (isValidMove(testHead) || movementPaused) {
-          direction = newDir;
+        Point testHead = Point(snakes[0].body[0].x + newDir.x, snakes[0].body[0].y + newDir.y);
+        if (isValidMoveForSnake(testHead, 0) || snakes[0].movementPaused) {
+          snakes[0].direction = newDir;
           std::cout << "Arrow Up - Moving up" << std::endl;
         }
       }
       break;
     case SDLK_DOWN:
-      if (direction.y == 0) {
+      if (!snakes.empty() && snakes[0].direction.y == 0) {
         Point newDir = Point(0, -1);
-        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-        if (isValidMove(testHead) || movementPaused) {
-          direction = newDir;
+        Point testHead = Point(snakes[0].body[0].x + newDir.x, snakes[0].body[0].y + newDir.y);
+        if (isValidMoveForSnake(testHead, 0) || snakes[0].movementPaused) {
+          snakes[0].direction = newDir;
           std::cout << "Arrow Down - Moving down" << std::endl;
         }
       }
       break;
     case SDLK_LEFT:
-      if (direction.x == 0) {
+      if (!snakes.empty() && snakes[0].direction.x == 0) {
         Point newDir = Point(-1, 0);
-        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-        if (isValidMove(testHead) || movementPaused) {
-          direction = newDir;
+        Point testHead = Point(snakes[0].body[0].x + newDir.x, snakes[0].body[0].y + newDir.y);
+        if (isValidMoveForSnake(testHead, 0) || snakes[0].movementPaused) {
+          snakes[0].direction = newDir;
           std::cout << "Arrow Left - Moving left" << std::endl;
         }
       }
       break;
     case SDLK_RIGHT:
-      if (direction.x == 0) {
+      if (!snakes.empty() && snakes[0].direction.x == 0) {
         Point newDir = Point(1, 0);
-        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-        if (isValidMove(testHead) || movementPaused) {
-          direction = newDir;
+        Point testHead = Point(snakes[0].body[0].x + newDir.x, snakes[0].body[0].y + newDir.y);
+        if (isValidMoveForSnake(testHead, 0) || snakes[0].movementPaused) {
+          snakes[0].direction = newDir;
           std::cout << "Arrow Right - Moving right" << std::endl;
         }
       }
@@ -1668,41 +2140,41 @@ void handleKeyboardEvent(SDL_KeyboardEvent *keyEvent) {
     
     // Movement keys - WASD
     case SDLK_w:
-      if (direction.y == 0) {
+      if (!snakes.empty() && snakes[0].direction.y == 0) {
         Point newDir = Point(0, 1);
-        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-        if (isValidMove(testHead) || movementPaused) {
-          direction = newDir;
+        Point testHead = Point(snakes[0].body[0].x + newDir.x, snakes[0].body[0].y + newDir.y);
+        if (isValidMoveForSnake(testHead, 0) || snakes[0].movementPaused) {
+          snakes[0].direction = newDir;
           std::cout << "W key - Moving up" << std::endl;
         }
       }
       break;
     case SDLK_s:
-      if (direction.y == 0) {
+      if (!snakes.empty() && snakes[0].direction.y == 0) {
         Point newDir = Point(0, -1);
-        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-        if (isValidMove(testHead) || movementPaused) {
-          direction = newDir;
+        Point testHead = Point(snakes[0].body[0].x + newDir.x, snakes[0].body[0].y + newDir.y);
+        if (isValidMoveForSnake(testHead, 0) || snakes[0].movementPaused) {
+          snakes[0].direction = newDir;
           std::cout << "S key - Moving down" << std::endl;
         }
       }
       break;
     case SDLK_a:
-      if (direction.x == 0) {
+      if (!snakes.empty() && snakes[0].direction.x == 0) {
         Point newDir = Point(-1, 0);
-        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-        if (isValidMove(testHead) || movementPaused) {
-          direction = newDir;
+        Point testHead = Point(snakes[0].body[0].x + newDir.x, snakes[0].body[0].y + newDir.y);
+        if (isValidMoveForSnake(testHead, 0) || snakes[0].movementPaused) {
+          snakes[0].direction = newDir;
           std::cout << "A key - Moving left" << std::endl;
         }
       }
       break;
     case SDLK_d:
-      if (direction.x == 0) {
+      if (!snakes.empty() && snakes[0].direction.x == 0) {
         Point newDir = Point(1, 0);
-        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-        if (isValidMove(testHead) || movementPaused) {
-          direction = newDir;
+        Point testHead = Point(snakes[0].body[0].x + newDir.x, snakes[0].body[0].y + newDir.y);
+        if (isValidMoveForSnake(testHead, 0) || snakes[0].movementPaused) {
+          snakes[0].direction = newDir;
           std::cout << "D key - Moving right" << std::endl;
         }
       }
@@ -1793,47 +2265,63 @@ void handleKeyboardEvent(SDL_KeyboardEvent *keyEvent) {
 // Handle SDL2 gamepad button down events
 void handleGamepadButtonDown(SDL_ControllerButtonEvent *buttonEvent) {
   std::cout << ">>> SDL2 GAMEPAD BUTTON " << buttonEvent->button
-            << " PRESSED <<<" << std::endl;
+            << " PRESSED (Controller " << buttonEvent->which << ") <<<" << std::endl;
 
   // Track gamepad input for display
   usingGamepadInput = true;
   lastButtonPressed = buttonEvent->button;
   lastButtonTime = SDL_GetTicks() / 1000.0f;
 
+  // Find which snake corresponds to this controller (controller i -> snake[i])
+  int snakeIndex = -1;
+  for (int i = 0; i < gameControllers.size(); i++) {
+    if (gameControllers[i] && SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(gameControllers[i])) == buttonEvent->which) {
+      snakeIndex = i; // Controller 0 -> snake[0], Controller 1 -> snake[1], etc.
+      break;
+    }
+  }
+
+  if (snakeIndex == -1 || snakeIndex >= snakes.size()) {
+    std::cout << "Warning: Controller " << buttonEvent->which << " not mapped to any snake!" << std::endl;
+    return;
+  }
+
+  std::cout << "Input mapped to Snake " << snakeIndex << " (Controller " << snakeIndex << ")" << std::endl;
+
   switch (buttonEvent->button) {
   case SDL_CONTROLLER_BUTTON_DPAD_UP:
-    if (direction.y == 0) {
+    if (snakes[snakeIndex].direction.y == 0) {
       Point newDir = Point(0, 1);
-      Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-      if (isValidMove(testHead) || movementPaused) {
-        direction = newDir;
+      Point testHead = Point(snakes[snakeIndex].body[0].x + newDir.x, snakes[snakeIndex].body[0].y + newDir.y);
+      if (isValidMoveForSnake(testHead, snakeIndex) || snakes[snakeIndex].movementPaused) {
+        snakes[snakeIndex].direction = newDir;
       }
     }
     break;
   case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-    if (direction.y == 0) {
+    if (snakes[snakeIndex].direction.y == 0) {
       Point newDir = Point(0, -1);
-      Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-      if (isValidMove(testHead) || movementPaused) {
-        direction = newDir;
+      Point testHead = Point(snakes[snakeIndex].body[0].x + newDir.x, snakes[snakeIndex].body[0].y + newDir.y);
+      if (isValidMoveForSnake(testHead, snakeIndex) || snakes[snakeIndex].movementPaused) {
+        snakes[snakeIndex].direction = newDir;
       }
     }
     break;
   case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-    if (direction.x == 0) {
+    if (snakes[snakeIndex].direction.x == 0) {
       Point newDir = Point(-1, 0);
-      Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-      if (isValidMove(testHead) || movementPaused) {
-        direction = newDir;
+      Point testHead = Point(snakes[snakeIndex].body[0].x + newDir.x, snakes[snakeIndex].body[0].y + newDir.y);
+      if (isValidMoveForSnake(testHead, snakeIndex) || snakes[snakeIndex].movementPaused) {
+        snakes[snakeIndex].direction = newDir;
       }
     }
     break;
   case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-    if (direction.x == 0) {
+    if (snakes[snakeIndex].direction.x == 0) {
       Point newDir = Point(1, 0);
-      Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-      if (isValidMove(testHead) || movementPaused) {
-        direction = newDir;
+      Point testHead = Point(snakes[snakeIndex].body[0].x + newDir.x, snakes[snakeIndex].body[0].y + newDir.y);
+      if (isValidMoveForSnake(testHead, snakeIndex) || snakes[snakeIndex].movementPaused) {
+        snakes[snakeIndex].direction = newDir;
       }
     }
     break;
@@ -1923,45 +2411,58 @@ void handleGamepadButtonDown(SDL_ControllerButtonEvent *buttonEvent) {
 void handleGamepadAxis(SDL_ControllerAxisEvent *axisEvent) {
   const float deadzone = 0.3f;
 
+  // Find which snake corresponds to this controller (controller i -> snake[i])
+  int snakeIndex = -1;
+  for (int i = 0; i < gameControllers.size(); i++) {
+    if (gameControllers[i] && SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(gameControllers[i])) == axisEvent->which) {
+      snakeIndex = i; // Controller 0 -> snake[0], Controller 1 -> snake[1], etc.
+      break;
+    }
+  }
+
+  if (snakeIndex == -1 || snakeIndex >= snakes.size()) {
+    return; // Controller not mapped to any snake
+  }
+
   if (axisEvent->axis == SDL_CONTROLLER_AXIS_LEFTX) {
     float value = axisEvent->value / 32767.0f;
-    if (abs(value) > deadzone && direction.x == 0) {
+    if (abs(value) > deadzone && snakes[snakeIndex].direction.x == 0) {
       // Track gamepad input for display
       usingGamepadInput = true;
       lastButtonTime = SDL_GetTicks() / 1000.0f;
 
       if (value > deadzone) {
         Point newDir = Point(1, 0);
-        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-        if (isValidMove(testHead) || movementPaused) {
-          direction = newDir;
+        Point testHead = Point(snakes[snakeIndex].body[0].x + newDir.x, snakes[snakeIndex].body[0].y + newDir.y);
+        if (isValidMoveForSnake(testHead, snakeIndex) || snakes[snakeIndex].movementPaused) {
+          snakes[snakeIndex].direction = newDir;
         }
       } else if (value < -deadzone) {
         Point newDir = Point(-1, 0);
-        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-        if (isValidMove(testHead) || movementPaused) {
-          direction = newDir;
+        Point testHead = Point(snakes[snakeIndex].body[0].x + newDir.x, snakes[snakeIndex].body[0].y + newDir.y);
+        if (isValidMoveForSnake(testHead, snakeIndex) || snakes[snakeIndex].movementPaused) {
+          snakes[snakeIndex].direction = newDir;
         }
       }
     }
   } else if (axisEvent->axis == SDL_CONTROLLER_AXIS_LEFTY) {
     float value = axisEvent->value / 32767.0f;
-    if (abs(value) > deadzone && direction.y == 0) {
+    if (abs(value) > deadzone && snakes[snakeIndex].direction.y == 0) {
       // Track gamepad input for display
       usingGamepadInput = true;
       lastButtonTime = SDL_GetTicks() / 1000.0f;
 
       if (value < -deadzone) {
         Point newDir = Point(0, 1);
-        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-        if (isValidMove(testHead) || movementPaused) {
-          direction = newDir;
+        Point testHead = Point(snakes[snakeIndex].body[0].x + newDir.x, snakes[snakeIndex].body[0].y + newDir.y);
+        if (isValidMoveForSnake(testHead, snakeIndex) || snakes[snakeIndex].movementPaused) {
+          snakes[snakeIndex].direction = newDir;
         }
       } else if (value > deadzone) {
         Point newDir = Point(0, -1);
-        Point testHead = Point(snake[0].x + newDir.x, snake[0].y + newDir.y);
-        if (isValidMove(testHead) || movementPaused) {
-          direction = newDir;
+        Point testHead = Point(snakes[snakeIndex].body[0].x + newDir.x, snakes[snakeIndex].body[0].y + newDir.y);
+        if (isValidMoveForSnake(testHead, snakeIndex) || snakes[snakeIndex].movementPaused) {
+          snakes[snakeIndex].direction = newDir;
         }
       }
     }
@@ -2057,20 +2558,42 @@ void createIPCGridData(char* gridData) {
         gridData[pacman.y * GRID_WIDTH + pacman.x] = 'P';  // Pacman
     }
     
-    // Draw snake (body first, then head on top)
-    for (size_t i = snake.size(); i > 0; i--) {
-        const Point& segment = snake[i - 1];
-        if (segment.x >= 0 && segment.x < GRID_WIDTH && 
-            segment.y >= 0 && segment.y < GRID_HEIGHT) {
-            if (i == 1) {
-                // Snake head
-                if (movementPaused) {
-                    gridData[segment.y * GRID_WIDTH + segment.x] = 'H';  // Paused head
+    // Draw player snakes (body first, then head on top)
+    for (const auto& snake : snakes) {
+        for (size_t i = snake.body.size(); i > 0; i--) {
+            const Point& segment = snake.body[i - 1];
+            if (segment.x >= 0 && segment.x < GRID_WIDTH && 
+                segment.y >= 0 && segment.y < GRID_HEIGHT) {
+                if (i == 1) {
+                    // Snake head
+                    if (snake.movementPaused) {
+                        gridData[segment.y * GRID_WIDTH + segment.x] = 'H';  // Paused head
+                    } else {
+                        gridData[segment.y * GRID_WIDTH + segment.x] = 'S';  // Snake head
+                    }
                 } else {
-                    gridData[segment.y * GRID_WIDTH + segment.x] = 'S';  // Snake head
+                    gridData[segment.y * GRID_WIDTH + segment.x] = 's';  // Snake body
                 }
-            } else {
-                gridData[segment.y * GRID_WIDTH + segment.x] = 's';  // Snake body
+            }
+        }
+    }
+    
+    // Draw AI snakes (body first, then head on top)
+    for (const auto& aiSnake : aiSnakes) {
+        for (size_t i = aiSnake.body.size(); i > 0; i--) {
+            const Point& segment = aiSnake.body[i - 1];
+            if (segment.x >= 0 && segment.x < GRID_WIDTH && 
+                segment.y >= 0 && segment.y < GRID_HEIGHT) {
+                if (i == 1) {
+                    // AI Snake head
+                    if (aiSnake.movementPaused) {
+                        gridData[segment.y * GRID_WIDTH + segment.x] = 'A';  // Paused AI head
+                    } else {
+                        gridData[segment.y * GRID_WIDTH + segment.x] = 'I';  // AI head
+                    }
+                } else {
+                    gridData[segment.y * GRID_WIDTH + segment.x] = 'i';  // AI body
+                }
             }
         }
     }
@@ -2208,14 +2731,28 @@ int main(int argc, char* argv[]) {
     return -1;
   }
 
-  // Build and compile shaders
-  GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
-  glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
-  glCompileShader(vertexShader);
-
-  GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-  glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
-  glCompileShader(fragmentShader);
+  // Load and compile shaders from files
+  std::string vertexShaderSource = loadShaderFromFile("shaders/vertex.vs");
+  std::string fragmentShaderSource = loadShaderFromFile("shaders/fragment.fs");
+  
+  if (vertexShaderSource.empty() || fragmentShaderSource.empty()) {
+    std::cerr << "Failed to load shader files!" << std::endl;
+    SDL_GL_DeleteContext(glContext);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    return -1;
+  }
+  
+  GLuint vertexShader = compileShader(vertexShaderSource, GL_VERTEX_SHADER, "Vertex");
+  GLuint fragmentShader = compileShader(fragmentShaderSource, GL_FRAGMENT_SHADER, "Fragment");
+  
+  if (vertexShader == 0 || fragmentShader == 0) {
+    std::cerr << "Failed to compile shaders!" << std::endl;
+    SDL_GL_DeleteContext(glContext);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    return -1;
+  }
 
   shaderProgram = glCreateProgram();
   glAttachShader(shaderProgram, vertexShader);
@@ -2261,18 +2798,12 @@ int main(int argc, char* argv[]) {
                         (void *)(2 * sizeof(float)));
   glEnableVertexAttribArray(1);
 
-  // Initialize game
-  initializeGame();
-
   // Initialize IPC mode if enabled
   if (ipcMode) {
     if (!initializeIPC()) {
       std::cerr << "Failed to initialize IPC mode, exiting..." << std::endl;
       cleanupIPC();
-      // Cleanup and exit
-      if (gameController) {
-        SDL_GameControllerClose(gameController);
-      }
+      // Cleanup and exit - controllers already cleaned up by main cleanup
       SDL_GL_DeleteContext(glContext);
       SDL_DestroyWindow(window);
       SDL_Quit();
@@ -2294,23 +2825,86 @@ int main(int argc, char* argv[]) {
     appleTexture = createAppleBitmap();
   }
 
-  // Initialize game controller if available
-  if (SDL_NumJoysticks() > 0) {
-    gameController = SDL_GameControllerOpen(0);
-    if (gameController) {
-      std::cout << "=== CONTROLLER DETECTED ===" << std::endl;
-      std::cout << "Controller Name: " << SDL_GameControllerName(gameController)
-                << std::endl;
-      std::cout << "Using SDL2 GAMEPAD INPUT" << std::endl;
-      std::cout << "=========================" << std::endl;
-
-      // Initialize rumble system
-      initializeRumble();
+  // Initialize game controllers
+  numControllers = SDL_NumJoysticks();
+  gameControllers.clear();
+  
+  std::cout << "=== CONTROLLER DETECTION ===" << std::endl;
+  std::cout << "Found " << numControllers << " controllers" << std::endl;
+  
+  for (int i = 0; i < numControllers && i < 4; i++) { // Max 4 controllers (4 snakes max)
+    SDL_GameController* controller = SDL_GameControllerOpen(i);
+    if (controller) {
+      gameControllers.push_back(controller);
+      
+      // Set player index for LED indicators (player 1, 2, 3, etc.)
+      int playerIndex = i + 1; // Player numbers start from 1
+      
+      std::cout << "Controller " << i << " (Player " << playerIndex << "): " 
+                << SDL_GameControllerName(controller) << std::endl;
+      
+      // Try setting player index multiple times for PS4 controllers
+      bool ledSetSuccessfully = false;
+      for (int attempt = 0; attempt < 3; attempt++) {
+        SDL_GameControllerSetPlayerIndex(controller, playerIndex);
+        
+        // Small delay to let the controller process the command
+        SDL_Delay(50);
+        
+        int currentPlayerIndex = SDL_GameControllerGetPlayerIndex(controller);
+        std::cout << "  Attempt " << (attempt + 1) << ": Set=" << playerIndex 
+                  << ", Read=" << currentPlayerIndex << std::endl;
+        
+        if (currentPlayerIndex == playerIndex) {
+          ledSetSuccessfully = true;
+          break;
+        }
+      }
+      
+      if (ledSetSuccessfully) {
+        std::cout << "  ✅ LED indicator set to Player " << playerIndex << std::endl;
+      } else {
+        std::cout << "  ⚠️  LED indicator failed to set after 3 attempts" << std::endl;
+        std::cout << "     (PS4 controllers sometimes don't support this feature)" << std::endl;
+      }
+    } else {
+      std::cout << "Failed to open controller " << i << ": " << SDL_GetError() << std::endl;
     }
   }
+  
+  numControllers = gameControllers.size(); // Update to actual opened controllers
+  std::cout << "Successfully opened " << numControllers << " controllers" << std::endl;
+  std::cout << "Total snakes: " << std::min(4, std::max(1, numControllers)) << std::endl;
+  
+  // Summary of snake assignments
+  std::cout << "🐍 Snake Control Mapping:" << std::endl;
+  const char* colors[] = {"Green", "Red", "Blue", "Yellow", "Magenta", "Cyan", "Orange", "Purple"};
+  
+  for (int i = 0; i < std::min(4, std::max(1, numControllers)) && i < 4; i++) {
+    std::cout << "   Snake[" << i << "]: ";
+    if (i == 0) {
+      std::cout << "Keyboard";
+      if (numControllers > 0) {
+        std::cout << " + Controller 0";
+      }
+    } else {
+      std::cout << "Controller " << i;
+    }
+    std::cout << " (" << colors[i] << ", Player " << (i+1) << ")" << std::endl;
+  }
+  std::cout << "===========================" << std::endl;
 
   // Initialize gyroscope system
-  initializeGyroscope();
+  // initializeGyroscope(); // Disabled for testing
+  
+  // Initialize rumble system for all controllers
+  initializeRumble();
+
+  // Initialize tile grid for efficient collision detection
+  initializeTileGrid();
+
+  // Initialize game AFTER controllers are detected
+  initializeGame();
 
   std::cout << "Snake Game Controls (SDL2 Version):\n";
   std::cout << "=== GAMEPAD CONTROLS ===\n";
@@ -2320,17 +2914,14 @@ int main(int argc, char* argv[]) {
   std::cout << "  X button: Pause/Unpause\n";
   std::cout << "  Y button: Reset confirmation\n";
   std::cout << "  Start button: Exit confirmation\n";
-  std::cout << "  L/R Shoulder: Change level (0=SNAKE, 1=PACMAN, 2=GRAVITY)\n";
+  std::cout << "  L/R Shoulder: Change level (0=SNAKE, 1=PACMAN, 2=MULTI SNAKE)\n";
   std::cout << "=== KEYBOARD CONTROLS ===\n";
   std::cout << "  Arrow Keys / WASD: Move snake\n";
   std::cout << "  Enter: Speed up / Confirm\n";
   std::cout << "  Esc: Slow down / Cancel\n";
   std::cout << "  Space: Pause/Unpause\n";
   std::cout << "  R: Reset confirmation\n";
-  std::cout << "  Page Down/Up: Change level (0=SNAKE, 1=PACMAN, 2=GRAVITY)\n";
-  if (gyroSupported) {
-    std::cout << "  🌀 Gyroscope: Tilt device to move food in Level 2!\n";
-  }
+  std::cout << "  Page Down/Up: Change level (0=SNAKE, 1=PACMAN, 2=MULTI SNAKE)\n";
 
   // Main game loop
   while (running) {
@@ -2344,7 +2935,7 @@ int main(int argc, char* argv[]) {
 
     // Update food physics based on gyroscope (Level 2+)
     if (currentTime - lastGyroUpdateTime > GYRO_UPDATE_INTERVAL) {
-      updateFoodPhysics(currentTime - lastGyroUpdateTime);
+      // updateFoodPhysics(currentTime - lastGyroUpdateTime); // Disabled for testing
       lastGyroUpdateTime = currentTime;
     }
 
@@ -2390,6 +2981,14 @@ int main(int argc, char* argv[]) {
       lastPacmanMoveTime = currentTime;
     }
 
+    // Update AI snakes at their own interval
+    if (!gamePaused && !exitConfirmation && !resetConfirmation &&
+        !aiSnakes.empty() &&
+        currentTime - lastAISnakeMoveTime > AI_SNAKE_MOVE_INTERVAL) {
+      updateAISnakes();
+      lastAISnakeMoveTime = currentTime;
+    }
+
     glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
     render();
 
@@ -2398,11 +2997,17 @@ int main(int argc, char* argv[]) {
 
   // Cleanup
   cleanupRumble();
-  cleanupGyroscope();
+  // cleanupGyroscope(); // Disabled for testing
   cleanupIPC();
-  if (gameController) {
-    SDL_GameControllerClose(gameController);
+  cleanupTileGrid();
+  
+  // Close all game controllers
+  for (auto controller : gameControllers) {
+    if (controller) {
+      SDL_GameControllerClose(controller);
+    }
   }
+  gameControllers.clear();
 
   glDeleteVertexArrays(1, &VAO);
   glDeleteBuffers(1, &VBO);

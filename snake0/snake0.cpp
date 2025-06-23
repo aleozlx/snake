@@ -1,4 +1,11 @@
-#include "snake_dep.h"
+#include "snake_dep.h"  // IWYU pragma: keep
+#include <vector>
+#include <random>
+#include <iostream>
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <cstdlib>
 
 // Vertex shader source for rendering squares and circles
 const char* vertexShaderSource = R"(
@@ -74,13 +81,6 @@ float screenWidth = 1.0f;
 float screenHeight = 1.0f;
 float aspectRatio = 1.0f;
 float cellSize = 0.1f;  // Will be calculated based on screen
-
-// Game state
-struct Point {
-    int x, y;
-    Point(int x = 0, int y = 0) : x(x), y(y) {}
-    bool operator==(const Point& other) const { return x == other.x && y == other.y; }
-};
 
 std::vector<Point> snake;
 Point food;
