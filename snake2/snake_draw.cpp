@@ -1,6 +1,5 @@
 #include "snake_draw.h"
 #include "snake_dep.h"
-#include "snake_theme.h" // Centralized color theme
 #include <algorithm>
 #include <cmath>
 

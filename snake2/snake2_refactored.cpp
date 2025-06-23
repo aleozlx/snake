@@ -15,10 +15,6 @@
 #include <algorithm>
 #include <memory>
 
-// External font data (from fonts/font0.cpp)
-extern const bool font_5x7[36][7][5];
-extern int getCharIndex(char c);
-
 // Use centralized color theme
 using namespace SnakeTheme;
 
