@@ -7,6 +7,8 @@
 #include <vector>
 #include <unordered_map>
 
+// #define ENABLE_IPC
+
 // ===== EVENT SYSTEM IMPLEMENTATION =====
 
 namespace {
@@ -70,8 +72,11 @@ public:
     float deltaTime = 0.0f;
     float lastFrameTime = 0.0f;
     
+
+#ifdef ENABLE_IPC
     // IPC state
     MemoryMappedCircularBuffer* circularBuffer = nullptr;
+#endif
     
     Impl() : eventSystem(std::make_unique<EventSystemImpl>()) {}
     
@@ -148,6 +153,7 @@ public:
     
     // IPC functionality
     bool initializeIPCMode() {
+#ifdef ENABLE_IPC
         std::cout << "=== INITIALIZING IPC MODE ===" << std::endl;
         std::cout << "Grid size: " << config.gridWidth << "x" << config.gridHeight << std::endl;
         std::cout << "Grid data size: " << (config.gridWidth * config.gridHeight) << " bytes" << std::endl;
@@ -180,9 +186,13 @@ public:
         std::cout << "Buffer stages: " << BUFFER_STAGES << ", Slot size: " << SLOT_SIZE << " bytes" << std::endl;
         std::cout << "============================" << std::endl;
         return true;
+#else
+        return true;
+#endif
     }
     
     void writeIPCSlotData(const char* gridData, char lastButton) {
+#ifdef ENABLE_IPC
         if (!circularBuffer) return;
         
         // IPC slot data structure (using config grid size)
@@ -205,15 +215,18 @@ public:
         if (!circularBuffer->write_slot(&slotData, sizeof(IPCSlotData))) {
             std::cout << "⚠️  Failed to write to circular buffer!" << std::endl;
         }
+#endif
     }
     
     void cleanupIPCMode() {
+#ifdef ENABLE_IPC
         if (circularBuffer) {
             circularBuffer->cleanup();
             delete circularBuffer;
             circularBuffer = nullptr;
             std::cout << "IPC mode cleaned up" << std::endl;
         }
+#endif
     }
     
     bool loadShaders() {
@@ -611,4 +624,4 @@ void SnakeApp::writeIPCSlot(const char* gridData, char lastButton) {
 }
 void SnakeApp::cleanupIPC() { 
     m_impl->cleanupIPCMode(); 
-} 
+}
