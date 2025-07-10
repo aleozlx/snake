@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <cstring>
+#include <cstdint>
 
 // Configuration macros
 #define BUFFER_STAGES 10
