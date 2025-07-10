@@ -61,13 +61,27 @@ The project has excellent modularity with:
 
 ### Phase 4: Continuous Integration Pipeline
 
-#### 4.1 Quality Gates
+#### 4.1 CI/CD Infrastructure
+- [ ] Set up GitHub Actions self-hosted runners on local network
+- [ ] Configure runner on development machine for general builds
+- [ ] Configure runner on Steam Deck for native target testing
+- [ ] Implement secure network access (Tailscale or similar)
+- [ ] Create containerized runners for build isolation
+
+**Notes on CI/CD Setup:**
+- **Self-hosted runners**: Recommended for local network control and Steam Deck testing
+- **Network security**: Use Tailscale or VPN for secure GitHub Actions access
+- **Target hardware testing**: Steam Deck runner for native performance validation
+- **Build isolation**: Docker containers for consistent environments
+- **Resource access**: Local access to Steam Deck headers and custom build flags
+
+#### 4.2 Quality Gates
 - [ ] Set up automated code quality checks
 - [ ] Implement performance regression detection
 - [ ] Add test coverage gates
 - [ ] Create build artifact validation
 
-#### 4.2 Automated Benchmarking
+#### 4.3 Automated Benchmarking
 - [ ] Frame rate performance benchmarks
 - [ ] Memory usage profiling
 - [ ] A* pathfinding performance tests
