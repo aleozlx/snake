@@ -3,4 +3,4 @@
 .clangd
 external/linux-headers/
 build*/
-
+__pycache__/

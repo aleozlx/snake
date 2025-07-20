@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-VLLM Code Generation Script
+VLLM Code Generation Script (Refactored with Dependency Injection)
 
-This script demonstrates how to use VLLM for code generation tasks.
-VLLM is a fast and memory-efficient inference engine for large language models.
+This script demonstrates batch code generation using VLLM with dependency injection
+for improved testability and modularity.
 
 Usage:
-    python vllm_codegen.py --model <model_name> --prompt <code_prompt>
+    python a1_refactored.py "def fibonacci(n):"
+    python a1_refactored.py --backend mock "def test():"
 
 Example:
-    python vllm_codegen.py --model "codellama/CodeLlama-7b-Python-hf" --prompt "def fibonacci(n):"
+    python a1_refactored.py --model "codellama/CodeLlama-7b-Python-hf" "def fibonacci(n):"
 
 Requirements:
     pip install vllm
@@ -19,35 +20,23 @@ Supported Models:
     - codellama/CodeLlama-13b-Python-hf
     - WizardLM/WizardCoder-Python-7B-V1.0
     - deepseek-ai/deepseek-coder-6.7b-instruct
-
-Environment Variables:
-    CUDA_VISIBLE_DEVICES: Set GPU devices (default: "0")
-    VLLM_TENSOR_PARALLEL_SIZE: Number of GPUs for tensor parallelism (default: 1)
 """
 
 import argparse
 import os
 from typing import List, Optional
-from vllm import LLM, SamplingParams
+from backend import CodeGenerationBackend
 
 
 class VLLMCodeGenerator:
-    def __init__(self, model_name: str, tensor_parallel_size: int = 1):
+    def __init__(self, backend: CodeGenerationBackend):
         """
-        Initialize VLLM code generator.
+        Initialize VLLM code generator with dependency injection.
 
         Args:
-            model_name: HuggingFace model name or path
-            tensor_parallel_size: Number of GPUs for tensor parallelism
+            backend: Code generation backend (VLLM, Mock, etc.)
         """
-        self.model_name = model_name
-        self.llm = LLM(
-            model=model_name,
-            tensor_parallel_size=tensor_parallel_size,
-            trust_remote_code=True,
-            gpu_memory_utilization=0.9,
-            max_model_len=8192
-        )
+        self.backend = backend
 
     def generate_code(
         self,
@@ -70,18 +59,13 @@ class VLLMCodeGenerator:
         Returns:
             List of generated code completions
         """
-        if stop_tokens is None:
-            stop_tokens = ["\n\n", "def ", "class ", "import ", "from "]
-
-        sampling_params = SamplingParams(
+        return self.backend.batch_generate(
+            prompts=prompts,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
-            stop=stop_tokens
+            stop_tokens=stop_tokens
         )
-
-        outputs = self.llm.generate(prompts, sampling_params)
-        return [output.outputs[0].text for output in outputs]
 
     def generate_function(self, function_signature: str, docstring: str = "") -> str:
         """
@@ -95,12 +79,12 @@ class VLLMCodeGenerator:
             Complete function implementation
         """
         if docstring:
-            prompt = f'{function_signature}\n    """{docstring}"""\n    '
+            prompt = f'{function_signature}\\n    """{docstring}"""\\n    '
         else:
-            prompt = f'{function_signature}\n    '
+            prompt = f'{function_signature}\\n    '
 
-        completions = self.generate_code([prompt], max_tokens=256)
-        return function_signature + "\n    " + completions[0]
+        completions = self.backend.generate(prompt, max_tokens=256)
+        return function_signature + "\\n    " + completions
 
 
 def main():
@@ -111,6 +95,8 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.1, help="Temperature")
     parser.add_argument("--top-p", type=float, default=0.95, help="Top-p sampling")
     parser.add_argument("--tensor-parallel", type=int, default=1, help="Tensor parallel size")
+    parser.add_argument("--backend", default="vllm", choices=["vllm", "mock"],
+                       help="Backend type to use (default: vllm)")
 
     args = parser.parse_args()
 
@@ -118,22 +104,39 @@ def main():
     if "CUDA_VISIBLE_DEVICES" not in os.environ:
         os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
-    print(f"Loading model: {args.model}")
-    generator = VLLMCodeGenerator(args.model, args.tensor_parallel)
+    print(f"Loading backend: {args.backend}")
+    if args.backend == "vllm":
+        print(f"Model: {args.model}")
+        
+    try:
+        # Use factory to create agent
+        from factory import create_agent
+        generator = create_agent(
+            agent_type="a1",
+            backend_type=args.backend,
+            model_name=args.model,
+            tensor_parallel_size=args.tensor_parallel
+        )
 
-    print(f"Generating code for prompt: {args.prompt}")
-    completions = generator.generate_code(
-        [args.prompt],
-        max_tokens=args.max_tokens,
-        temperature=args.temperature,
-        top_p=args.top_p
-    )
+        print(f"Generating code for prompt: {args.prompt}")
+        completions = generator.generate_code(
+            [args.prompt],
+            max_tokens=args.max_tokens,
+            temperature=args.temperature,
+            top_p=args.top_p
+        )
 
-    print("\nGenerated Code:")
-    print("-" * 50)
-    print(args.prompt + completions[0])
-    print("-" * 50)
+        print("\\nGenerated Code:")
+        print("-" * 50)
+        print(args.prompt + completions[0])
+        print("-" * 50)
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    exit(main())
